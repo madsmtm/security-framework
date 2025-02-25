@@ -1,15 +1,15 @@
 //! Password support.
+#![allow(deprecated)]
 
 use crate::os::macos::keychain::SecKeychain;
 use crate::os::macos::keychain_item::SecKeychainItem;
-use core_foundation::array::CFArray;
-use core_foundation::base::TCFType;
-pub use security_framework_sys::keychain::{SecAuthenticationType, SecProtocolType};
-use security_framework_sys::keychain::{
+use objc2_core_foundation::CFArray;
+pub use objc2_security::{SecAuthenticationType, SecProtocolType};
+use objc2_security::{
     SecKeychainAddGenericPassword, SecKeychainAddInternetPassword, SecKeychainFindGenericPassword,
     SecKeychainFindInternetPassword,
 };
-use security_framework_sys::keychain_item::{
+use objc2_security::{
     SecKeychainItemDelete, SecKeychainItemFreeContent, SecKeychainItemModifyAttributesAndData,
 };
 use std::fmt;
@@ -67,7 +67,7 @@ impl SecKeychainItem {
     pub fn set_password(&mut self, password: &[u8]) -> Result<()> {
         unsafe {
             cvt(SecKeychainItemModifyAttributesAndData(
-                self.as_CFTypeRef() as *mut _,
+                self.as_CFType() as *mut _,
                 ptr::null(),
                 password.len() as u32,
                 password.as_ptr().cast(),
@@ -80,7 +80,7 @@ impl SecKeychainItem {
     #[inline]
     pub fn delete(self) {
         unsafe {
-            SecKeychainItemDelete(self.as_CFTypeRef() as *mut _);
+            SecKeychainItemDelete(self.as_CFType() as *mut _);
         }
     }
 }
@@ -102,7 +102,7 @@ pub fn find_generic_password(
 
     let keychains_or_null = match keychains_or_none {
         None => ptr::null(),
-        Some(ref keychains) => keychains.as_CFTypeRef(),
+        Some(ref keychains) => keychains.as_CFType(),
     };
 
     let mut data_len = 0;
@@ -154,7 +154,7 @@ pub fn find_internet_password(
 
     let keychains_or_null = match keychains_or_none {
         None => ptr::null(),
-        Some(ref keychains) => keychains.as_CFTypeRef(),
+        Some(ref keychains) => keychains.as_CFType(),
     };
 
     let mut data_len = 0;
@@ -292,7 +292,7 @@ impl SecKeychain {
     ) -> Result<()> {
         unsafe {
             cvt(SecKeychainAddGenericPassword(
-                self.as_CFTypeRef() as *mut _,
+                self.as_CFType() as *mut _,
                 service.len() as u32,
                 service.as_ptr().cast(),
                 account.len() as u32,
@@ -323,7 +323,7 @@ impl SecKeychain {
     ) -> Result<()> {
         unsafe {
             cvt(SecKeychainAddInternetPassword(
-                self.as_CFTypeRef() as *mut _,
+                self.as_CFType() as *mut _,
                 server.len() as u32,
                 server.as_ptr().cast(),
                 security_domain.map_or(0, |s| s.len() as u32),

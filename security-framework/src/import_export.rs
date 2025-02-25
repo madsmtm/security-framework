@@ -1,11 +1,7 @@
 //! Security Framework type import/export support.
 
-use core_foundation::array::CFArray;
-use core_foundation::base::{CFType, TCFType};
-use core_foundation::data::CFData;
-use core_foundation::dictionary::CFDictionary;
-use core_foundation::string::CFString;
-use security_framework_sys::import_export::*;
+use objc2_core_foundation::{CFArray, CFType, CFData, CFDictionary, CFString};
+use objc2_security::*;
 use std::ptr;
 
 use crate::base::Result;
@@ -36,7 +32,7 @@ pub struct ImportedIdentity {
 /// A builder type to import an identity from PKCS#12 formatted data.
 #[derive(Default)]
 pub struct Pkcs12ImportOptions {
-    passphrase: Option<CFString>,
+    passphrase: Option<CFRetained<CFString>>,
     #[cfg(target_os = "macos")]
     keychain: Option<SecKeychain>,
     #[cfg(target_os = "macos")]
@@ -95,35 +91,37 @@ impl Pkcs12ImportOptions {
 
             let mut raw_items = ptr::null();
             cvt(SecPKCS12Import(
-                pkcs12_data.as_concrete_TypeRef(),
-                options.as_concrete_TypeRef(),
+                pkcs12_data,
+                options,
                 &mut raw_items,
             ))?;
-            let raw_items = CFArray::<CFDictionary<CFString, *const _>>::wrap_under_create_rule(raw_items);
+            let raw_items = CFArray::<CFDictionary<CFString, CFType>>::wrap_under_create_rule(raw_items);
 
             let mut items = vec![];
 
-            for raw_item in &raw_items {
+            for raw_item in raw_items {
                 let label = raw_item
                     .find(kSecImportItemLabel)
-                    .map(|label| CFString::wrap_under_get_rule((*label).cast()).to_string());
+                    .map(|label| label.downcast::<CFString>().unwrap().to_string());
                 let key_id = raw_item
                     .find(kSecImportItemKeyID)
-                    .map(|key_id| CFData::wrap_under_get_rule((*key_id).cast()).to_vec());
+                    .map(|key_id| key_id.downcast::<CFData>().unwrap().to_vec());
                 let trust = raw_item
                     .find(kSecImportItemTrust)
-                    .map(|trust| SecTrust::wrap_under_get_rule(*trust as *mut _));
+                    .map(|trust| SecTrust::from_raw(trust.downcast::<objc2_security::SecTrust>().unwrap()));
                 let cert_chain = raw_item
                     .find(kSecImportItemCertChain.cast())
                     .map(|cert_chain| {
-                        CFArray::<SecCertificate>::wrap_under_get_rule((*cert_chain).cast())
-                            .iter()
-                            .map(|c| c.clone())
+                        cert_chain
+                            .downcast::<CFArray>()
+                            .unwrap()
+                            .into_iter()
+                            .map(|c| SecCertificate::from_raw(c.downcast::<objc2_security::SecCertificate>().unwrap()))
                             .collect()
                     });
                 let identity = raw_item
                     .find(kSecImportItemIdentity)
-                    .map(|identity| SecIdentity::wrap_under_get_rule(*identity as *mut _));
+                    .map(|identity| SecIdentity::from_raw(identity.downcast::<objc2_security::SecIdentity>().unwrap()));
 
                 items.push(ImportedIdentity {
                     label,

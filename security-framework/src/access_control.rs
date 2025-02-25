@@ -3,26 +3,20 @@
 use std::fmt;
 use std::ptr::{self, null};
 use crate::base::{Error, Result};
-use core_foundation::{declare_TCFType, impl_TCFType};
-use core_foundation::base::{kCFAllocatorDefault, CFOptionFlags, TCFType};
-use core_foundation::string::CFString;
-use security_framework_sys::access_control::{
+
+use objc2_core_foundation::{kCFAllocatorDefault, CFOptionFlags, };
+use objc2_core_foundation::CFString;
+use objc2_security::{
     kSecAttrAccessibleAfterFirstUnlock, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
     kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, kSecAttrAccessibleWhenUnlocked,
     kSecAttrAccessibleWhenUnlockedThisDeviceOnly, SecAccessControlCreateWithFlags,
-    SecAccessControlGetTypeID,
+    errSecParam,
 };
-use security_framework_sys::base::{errSecParam, SecAccessControlRef};
 
 declare_TCFType! {
     /// A type representing sec access control settings.
-    SecAccessControl, SecAccessControlRef
+    SecAccessControl, SecAccessControl
 }
-impl_TCFType!(
-    SecAccessControl,
-    SecAccessControlRef,
-    SecAccessControlGetTypeID
-);
 
 unsafe impl Sync for SecAccessControl {}
 unsafe impl Send for SecAccessControl {}
@@ -66,7 +60,7 @@ impl SecAccessControl {
         unsafe {
             let access_control = SecAccessControlCreateWithFlags(
                 kCFAllocatorDefault,
-                protection_val.map(|v| v.as_CFTypeRef()).unwrap_or(null()),
+                protection_val.map(|v| v.as_CFType()).unwrap_or(null()),
                 flags,
                 ptr::null_mut(),
             );

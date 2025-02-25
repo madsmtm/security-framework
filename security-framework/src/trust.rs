@@ -1,22 +1,14 @@
 //! Trust evaluation support.
-use core_foundation::{declare_TCFType, impl_TCFType};
-use core_foundation::array::CFArray;
-#[cfg(target_os = "macos")]
-use core_foundation::array::CFArrayRef;
-use core_foundation::base::TCFType;
-use core_foundation::data::CFData;
-use core_foundation::date::CFDate;
-use core_foundation_sys::base::{Boolean, CFIndex};
 
-use security_framework_sys::trust::*;
-use std::ptr;
+use objc2_core_foundation::{CFArray, CFError, CFData, CFDate, CFIndex, CFRetained};
+use objc2_security::*;
+use std::ptr::{self, NonNull};
 
 use crate::base::Result;
 use crate::certificate::SecCertificate;
 use crate::cvt;
 use crate::key::SecKey;
 use crate::policy::SecPolicy;
-use core_foundation::error::{CFError, CFErrorRef};
 
 /// The result of trust evaluation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -24,25 +16,25 @@ pub struct TrustResult(SecTrustResultType);
 
 impl TrustResult {
     /// An invalid setting or result.
-    pub const INVALID: Self = Self(kSecTrustResultInvalid);
+    pub const INVALID: Self = Self(SecTrustResultType::Invalid);
 
     /// You may proceed.
-    pub const PROCEED: Self = Self(kSecTrustResultProceed);
+    pub const PROCEED: Self = Self(SecTrustResultType::Proceed);
 
     /// Indicates a denial by the user, do not proceed.
-    pub const DENY: Self = Self(kSecTrustResultDeny);
+    pub const DENY: Self = Self(SecTrustResultType::Deny);
 
     /// The certificate is implicitly trusted.
-    pub const UNSPECIFIED: Self = Self(kSecTrustResultUnspecified);
+    pub const UNSPECIFIED: Self = Self(SecTrustResultType::Unspecified);
 
     /// Indicates a trust policy failure that the user can override.
-    pub const RECOVERABLE_TRUST_FAILURE: Self = Self(kSecTrustResultRecoverableTrustFailure);
+    pub const RECOVERABLE_TRUST_FAILURE: Self = Self(SecTrustResultType::RecoverableTrustFailure);
 
     /// Indicates a trust policy failure that the user cannot override.
-    pub const FATAL_TRUST_FAILURE: Self = Self(kSecTrustResultFatalTrustFailure);
+    pub const FATAL_TRUST_FAILURE: Self = Self(SecTrustResultType::FatalTrustFailure);
 
     /// An error not related to trust validation.
-    pub const OTHER_ERROR: Self = Self(kSecTrustResultOtherError);
+    pub const OTHER_ERROR: Self = Self(SecTrustResultType::OtherError);
 }
 
 impl TrustResult {
@@ -56,9 +48,8 @@ impl TrustResult {
 
 declare_TCFType! {
     /// A type representing a trust evaluation for a certificate.
-    SecTrust, SecTrustRef
+    SecTrust, SecTrust
 }
-impl_TCFType!(SecTrust, SecTrustRef, SecTrustGetTypeID);
 
 unsafe impl Sync for SecTrust {}
 unsafe impl Send for SecTrust {}
@@ -67,21 +58,21 @@ unsafe impl Send for SecTrust {}
 bitflags::bitflags! {
     /// The option flags used to configure the evaluation of a `SecTrust`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct TrustOptions: SecTrustOptionFlags {
+    pub struct TrustOptions: u32 {
         /// Allow expired certificates (except for the root certificate).
-        const ALLOW_EXPIRED = kSecTrustOptionAllowExpired;
+        const ALLOW_EXPIRED = SecTrustOptionFlags::AllowExpired.0;
         /// Allow CA certificates as leaf certificates.
-        const LEAF_IS_CA = kSecTrustOptionLeafIsCA;
+        const LEAF_IS_CA = SecTrustOptionFlags::LeafIsCA.0;
         /// Allow network downloads of CA certificates.
-        const FETCH_ISSUER_FROM_NET = kSecTrustOptionFetchIssuerFromNet;
+        const FETCH_ISSUER_FROM_NET = SecTrustOptionFlags::FetchIssuerFromNet.0;
         /// Allow expired root certificates.
-        const ALLOW_EXPIRED_ROOT = kSecTrustOptionAllowExpiredRoot;
+        const ALLOW_EXPIRED_ROOT = SecTrustOptionFlags::AllowExpiredRoot.0;
         /// Require a positive revocation check for each certificate.
-        const REQUIRE_REVOCATION_PER_CERT =  kSecTrustOptionRequireRevPerCert;
+        const REQUIRE_REVOCATION_PER_CERT =  SecTrustOptionFlags::RequireRevPerCert.0;
         /// Use TrustSettings instead of anchors.
-        const USE_TRUST_SETTINGS = kSecTrustOptionUseTrustSettings;
+        const USE_TRUST_SETTINGS = SecTrustOptionFlags::UseTrustSettings.0;
         /// Treat properly self-signed certificates as anchors implicitly.
-        const IMPLICIT_ANCHORS =  kSecTrustOptionImplicitAnchors;
+        const IMPLICIT_ANCHORS = SecTrustOptionFlags::ImplicitAnchors.0;
     }
 }
 
@@ -92,16 +83,18 @@ impl SecTrust {
         certs: &[SecCertificate],
         policies: &[SecPolicy],
     ) -> Result<Self> {
-        let cert_array = CFArray::from_CFTypes(certs);
-        let policy_array = CFArray::from_CFTypes(policies);
+        let certs = certs.iter().map(|cert| cert.0).collect::<Vec<_>>();
+        let certs: CFRetained<CFArray<objc2_security::SecCertificate>> = CFArray::from_retained_objects(&certs);
+        let policies = policies.iter().map(|policy| policy.0).collect::<Vec<_>>();
+        let policies = CFArray::from_retained_objects(&policies);
         let mut trust = ptr::null_mut();
         unsafe {
             cvt(SecTrustCreateWithCertificates(
-                cert_array.as_CFTypeRef(),
-                policy_array.as_CFTypeRef(),
-                &mut trust,
+                &certs,
+                Some(&policies),
+                NonNull::from(&mut trust),
             ))?;
-            Ok(Self(trust))
+            Ok(Self::wrap_under_create_rule(trust))
         }
     }
 
@@ -109,17 +102,18 @@ impl SecTrust {
     /// are verified.
     #[inline]
     pub fn set_trust_verify_date(&mut self, date: &CFDate) -> Result<()> {
-        unsafe { cvt(SecTrustSetVerifyDate(self.0, date.as_concrete_TypeRef())) }
+        unsafe { cvt(SecTrustSetVerifyDate(&self.0, date)) }
     }
 
     /// Sets additional anchor certificates used to validate trust.
     pub fn set_anchor_certificates(&mut self, certs: &[SecCertificate]) -> Result<()> {
-        let certs = CFArray::from_CFTypes(certs);
+        let certs = certs.iter().map(|cert| cert.0).collect::<Vec<_>>();
+        let certs = CFArray::from_retained_objects(&certs);
 
         unsafe {
             cvt(SecTrustSetAnchorCertificates(
-                self.0,
-                certs.as_concrete_TypeRef(),
+                &self.0,
+                Some(certs.as_opaque()),
             ))
         }
     }
@@ -127,18 +121,18 @@ impl SecTrust {
     /// Retrieves the anchor (root) certificates stored by macOS
     #[cfg(target_os = "macos")]
     pub fn copy_anchor_certificates() -> Result<Vec<SecCertificate>> {
-        let mut array: CFArrayRef = ptr::null();
+        let mut array: *const CFArray = ptr::null();
 
         unsafe {
-            cvt(SecTrustCopyAnchorCertificates(&mut array))?;
+            cvt(SecTrustCopyAnchorCertificates(NonNull::from(&mut array)))?;
         }
 
-        if array.is_null() {
-            return Ok(vec![]);
+        if let Some(array) = NonNull::new(array.cast::<CFArray<objc2_security::SecCertificate>>().cast_mut()) {
+            let array = unsafe { CFRetained::from_raw(array) };
+            Ok(array.into_iter().map(|c| SecCertificate(c)).collect())
+        } else {
+            Ok(vec![])
         }
-
-        let array = unsafe { CFArray::<SecCertificate>::wrap_under_create_rule(array) };
-        Ok(array.into_iter().map(|c| c.clone()).collect())
     }
 
     /// If set to `true`, only the certificates specified by
@@ -146,20 +140,20 @@ impl SecTrust {
     /// certificates.
     #[inline]
     pub fn set_trust_anchor_certificates_only(&mut self, only: bool) -> Result<()> {
-        unsafe { cvt(SecTrustSetAnchorCertificatesOnly(self.0, Boolean::from(only))) }
+        unsafe { cvt(SecTrustSetAnchorCertificatesOnly(&self.0, only)) }
     }
 
     /// Sets the policy used to evaluate trust.
     #[inline]
     pub fn set_policy(&mut self, policy: &SecPolicy) -> Result<()> {
-        unsafe { cvt(SecTrustSetPolicies(self.0, policy.as_CFTypeRef())) }
+        unsafe { cvt(SecTrustSetPolicies(&self.0, policy.as_raw())) }
     }
 
     /// Sets option flags for customizing evaluation of a trust object.
     #[cfg(target_os = "macos")]
     #[inline]
     pub fn set_options(&mut self, options: TrustOptions) -> Result<()> {
-        unsafe { cvt(SecTrustSetOptions(self.0, options.bits())) }
+        unsafe { cvt(SecTrustSetOptions(&self.0, SecTrustOptionFlags(options.bits()))) }
     }
 
     /// Indicates whether this trust object is permitted to
@@ -167,7 +161,7 @@ impl SecTrust {
     pub fn get_network_fetch_allowed(&mut self) -> Result<bool> {
         let mut allowed = 0;
 
-        unsafe { cvt(SecTrustGetNetworkFetchAllowed(self.0, &mut allowed))? };
+        unsafe { cvt(SecTrustGetNetworkFetchAllowed(&self.0, NonNull::from(&mut allowed)))? };
 
         Ok(allowed != 0)
     }
@@ -176,7 +170,7 @@ impl SecTrust {
     /// fetch missing intermediate certificates from the network.
     #[inline]
     pub fn set_network_fetch_allowed(&mut self, allowed: bool) -> Result<()> {
-        unsafe { cvt(SecTrustSetNetworkFetchAllowed(self.0, u8::from(allowed))) }
+        unsafe { cvt(SecTrustSetNetworkFetchAllowed(&self.0, allowed)) }
     }
 
     /// Attaches Online Certificate Status Protocol (OSCP) response data
@@ -185,14 +179,14 @@ impl SecTrust {
         &mut self,
         ocsp_response: I,
     ) -> Result<()> {
-        let response: Vec<CFData> = ocsp_response
+        let response: Vec<CFRetained<CFData>> = ocsp_response
             .into_iter()
             .map(|bytes| CFData::from_buffer(bytes.as_ref()))
             .collect();
 
-        let response = CFArray::from_CFTypes(&response);
+        let response = CFArray::from_retained_objects(&response);
 
-        unsafe { cvt(SecTrustSetOCSPResponse(self.0, response.as_CFTypeRef())) }
+        unsafe { cvt(SecTrustSetOCSPResponse(&self.0, Some(&response))) }
     }
 
     /// Attaches signed certificate timestamp data to this trust object.
@@ -203,18 +197,19 @@ impl SecTrust {
     ) -> Result<()> {
         let scts: Vec<CFData> = scts
             .into_iter()
-            .map(|bytes| CFData::from_buffer(bytes.as_ref()))
+            .map(|bytes| &CFData::from_buffer(bytes.as_()))
             .collect();
 
         let scts = CFArray::from_CFTypes(&scts);
 
-        unsafe { cvt(SecTrustSetSignedCertificateTimestamps(self.0, scts.as_concrete_TypeRef())) }
+        unsafe { cvt(SecTrustSetSignedCertificateTimestamps(&self.0, scts)) }
     }
 
     /// Returns the public key for a leaf certificate after it has been evaluated.
     #[inline]
     pub fn copy_public_key(&mut self) -> Result<SecKey> {
-        unsafe { Ok(SecKey::wrap_under_create_rule(SecTrustCopyPublicKey(self.0))) }
+        #[allow(deprecated)]
+        unsafe { Ok(SecKey(SecTrustCopyPublicKey(&self.0).unwrap())) }
     }
 
     /// Evaluates trust.
@@ -222,28 +217,26 @@ impl SecTrust {
     pub fn evaluate(&self) -> Result<TrustResult> {
         #[allow(deprecated)]
         unsafe {
-            let mut result = kSecTrustResultInvalid;
-            cvt(SecTrustEvaluate(self.0, &mut result))?;
+            let mut result = SecTrustResultType::Invalid;
+            cvt(SecTrustEvaluate(&self.0, NonNull::from(&mut result)))?;
             Ok(TrustResult(result))
         }
     }
 
     /// Evaluates trust. Requires macOS 10.14 or iOS, otherwise it just calls `evaluate()`
-    pub fn evaluate_with_error(&self) -> Result<(), CFError> {
+    pub fn evaluate_with_error(&self) -> Result<(), CFRetained<CFError>> {
         #[cfg(any(feature = "OSX_10_14", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
         unsafe {
-            let mut error: CFErrorRef = ::std::ptr::null_mut();
-            if !SecTrustEvaluateWithError(self.0, &mut error) {
-                assert!(!error.is_null());
-                let error = CFError::wrap_under_create_rule(error);
-                return Err(error);
+            let mut error: &CFError = ::std::ptr::null_mut();
+            if !SecTrustEvaluateWithError(&self.0, &mut error) {
+                return Err(CFRetained::from_raw(NonNull::new(error).unwrap()));
             }
             Ok(())
         }
         #[cfg(not(any(feature = "OSX_10_14", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos")))]
         #[allow(deprecated)]
         {
-            use security_framework_sys::base::{errSecNotTrusted, errSecTrustSettingDeny};
+            use objc2_security::{errSecNotTrusted, errSecTrustSettingDeny};
 
             let code = match self.evaluate() {
                 Ok(res) if res.success() => return Ok(()),
@@ -262,7 +255,7 @@ impl SecTrust {
     #[must_use]
     // FIXME: this should have been usize. Don't expose CFIndex in Rust APIs.
     pub fn certificate_count(&self) -> CFIndex {
-        unsafe { SecTrustGetCertificateCount(self.0) }
+        unsafe { SecTrustGetCertificateCount(&self.0) }
     }
 
     /// Returns a specific certificate from the certificate chain used to evaluate trust.
@@ -276,24 +269,18 @@ impl SecTrust {
             if self.certificate_count() <= ix {
                 None
             } else {
-                let certificate = SecTrustGetCertificateAtIndex(self.0, ix);
-                Some(SecCertificate::wrap_under_get_rule(certificate.cast()))
+                SecTrustGetCertificateAtIndex(&self.0, ix).map(SecCertificate)
             }
         }
     }
 }
 
 #[cfg(not(any(feature = "OSX_10_14", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos")))]
-extern "C" {
-    fn CFErrorCreate(allocator: core_foundation_sys::base::CFAllocatorRef, domain: core_foundation_sys::string::CFStringRef, code: CFIndex, userInfo: core_foundation_sys::dictionary::CFDictionaryRef) -> CFErrorRef;
-}
+fn cferror_from_osstatus(code: crate::base::OSStatus) -> CFRetained<CFError> {
+    use objc2_core_foundation::{kCFErrorDomainOSStatus, CFErrorCreate};
 
-#[cfg(not(any(feature = "OSX_10_14", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos")))]
-fn cferror_from_osstatus(code: core_foundation_sys::base::OSStatus) -> CFError {
     unsafe {
-        let error = CFErrorCreate(ptr::null_mut(), core_foundation_sys::error::kCFErrorDomainOSStatus, code as _, ptr::null_mut());
-        assert!(!error.is_null());
-        CFError::wrap_under_create_rule(error)
+        CFErrorCreate(None, kCFErrorDomainOSStatus, code as _, None).unwrap()
     }
 }
 

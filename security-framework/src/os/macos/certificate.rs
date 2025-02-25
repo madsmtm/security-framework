@@ -1,14 +1,8 @@
 //! OSX specific extensions to certificate functionality.
 
-use core_foundation::array::{CFArray, CFArrayIterator};
-use core_foundation::base::{TCFType, ToVoid};
-use core_foundation::data::CFData;
-use core_foundation::dictionary::CFDictionary;
-use core_foundation::error::CFError;
-use core_foundation::string::CFString;
-use security_framework_sys::certificate::*;
-use std::os::raw::c_void;
-use std::ptr;
+use objc2_core_foundation::{CFArray, CFArrayIter, CFData, CFDictionary, CFError, CFRetained, CFString, CFType, Type};
+use objc2_security::*;
+use std::ptr::{self, NonNull};
 
 use crate::base::Error;
 use crate::certificate::SecCertificate;
@@ -30,25 +24,25 @@ pub trait SecCertificateExt {
     ///
     /// The `keys` argument can optionally be used to filter the properties loaded to an explicit
     /// subset.
-    fn properties(&self, keys: Option<&[CertificateOid]>) -> Result<CertificateProperties, CFError>;
+    fn properties(&self, keys: Option<&[CertificateOid]>) -> Result<CertificateProperties, CFRetained<CFError>>;
 
     /// Returns the SHA-256 fingerprint of the certificate.
-    fn fingerprint(&self) -> Result<[u8; 32], CFError> { unimplemented!() }
+    fn fingerprint(&self) -> Result<[u8; 32], CFRetained<CFError>> { unimplemented!() }
 }
 
 impl SecCertificateExt for SecCertificate {
     fn common_name(&self) -> Result<String, Error> {
         unsafe {
             let mut string = ptr::null();
-            cvt(SecCertificateCopyCommonName(self.as_concrete_TypeRef(), &mut string))?;
-            Ok(CFString::wrap_under_create_rule(string).to_string())
+            cvt(SecCertificateCopyCommonName(self.as_raw(), NonNull::from(&mut string)))?;
+            Ok(CFRetained::from_raw(NonNull::new(string.cast_mut()).unwrap()).to_string())
         }
     }
 
     #[cfg(feature = "OSX_10_14")]
     fn public_key(&self) -> Result<SecKey, Error> {
         unsafe {
-            let key = SecCertificateCopyKey(self.as_concrete_TypeRef());
+            let key = SecCertificateCopyKey(self);
             if key.is_null() {
                 return Err(Error::from_code(-26275));
             }
@@ -61,70 +55,67 @@ impl SecCertificateExt for SecCertificate {
         #[allow(deprecated)]
         unsafe {
             let mut key = ptr::null_mut();
-            cvt(SecCertificateCopyPublicKey(self.as_concrete_TypeRef(), &mut key))?;
-            Ok(SecKey::wrap_under_create_rule(key))
+            cvt(SecCertificateCopyPublicKey(self.as_raw(), NonNull::from(&mut key)))?;
+            Ok(SecKey(CFRetained::from_raw(NonNull::new(key).unwrap())))
         }
     }
 
-    fn properties(&self, keys: Option<&[CertificateOid]>) -> Result<CertificateProperties, CFError> {
+    fn properties(&self, keys: Option<&[CertificateOid]>) -> Result<CertificateProperties, CFRetained<CFError>> {
         unsafe {
             let keys = keys.map(|oids| {
                 let oids = oids.iter().map(|oid| oid.to_str()).collect::<Vec<_>>();
-                CFArray::from_CFTypes(&oids)
+                CFArray::from_retained_objects(&oids)
             });
-
-            let keys = match keys {
-                Some(ref keys) => keys.as_concrete_TypeRef(),
-                None => ptr::null_mut(),
-            };
 
             let mut error = ptr::null_mut();
 
-            let dictionary = SecCertificateCopyValues(self.as_concrete_TypeRef(), keys, &mut error);
+            let dictionary = SecCertificateCopyValues(
+                self.as_raw(), keys.as_deref().map(|arr| arr.as_opaque()), &mut error,
+            );
 
             if error.is_null() {
-                Ok(CertificateProperties(CFDictionary::wrap_under_create_rule(dictionary)))
+                let dictionary = CFRetained::cast_unchecked(dictionary.unwrap());
+                Ok(CertificateProperties(dictionary))
             } else {
-                Err(CFError::wrap_under_create_rule(error))
+                Err(CFRetained::from_raw(NonNull::new(error).unwrap()))
             }
         }
     }
 
     /// Returns the SHA-256 fingerprint of the certificate.
-    fn fingerprint(&self) -> Result<[u8; 32], CFError> {
+    fn fingerprint(&self) -> Result<[u8; 32], CFRetained<CFError>> {
         let data = CFData::from_buffer(&self.to_der());
         let hash = Builder::new()
             .type_(DigestType::sha2())
             .length(256)
             .execute(&data)?;
-        Ok(hash.bytes().try_into().unwrap())
+        Ok(hash.to_vec().try_into().unwrap())
     }
 }
 
 /// Properties associated with a certificate.
-pub struct CertificateProperties(CFDictionary);
+pub struct CertificateProperties(CFRetained<CFDictionary<CFString, CFDictionary<CFString, CFType>>>);
 
 impl CertificateProperties {
     /// Retrieves a specific property identified by its OID.
     #[must_use]
     pub fn get(&self, oid: CertificateOid) -> Option<CertificateProperty> {
-        unsafe {
-            self.0.find(oid.as_ptr().cast::<c_void>()).map(|value| {
-                CertificateProperty(CFDictionary::wrap_under_get_rule(*value as *mut _))
+            self.0.get(oid.0).map(|value| {
+                CertificateProperty(value)
             })
-        }
+
     }
 }
 
 /// A property associated with a certificate.
-pub struct CertificateProperty(CFDictionary);
+pub struct CertificateProperty(CFRetained<CFDictionary<CFString, CFType>>);
 
 impl CertificateProperty {
     /// Returns the label of this property.
     #[must_use]
-    pub fn label(&self) -> CFString {
+    pub fn label(&self) -> CFRetained<CFString> {
         unsafe {
-            CFString::wrap_under_get_rule((*self.0.get(kSecPropertyKeyLabel.to_void())).cast())
+            self.0.get(kSecPropertyKeyLabel).unwrap().downcast().unwrap()
         }
     }
 
@@ -132,13 +123,14 @@ impl CertificateProperty {
     #[must_use]
     pub fn get(&self) -> PropertyType {
         unsafe {
-            let type_ = CFString::wrap_under_get_rule(*self.0.get(kSecPropertyKeyType.to_void()) as *mut _);
-            let value = self.0.get(kSecPropertyKeyValue.to_void());
+            let type_ = self.0.get(kSecPropertyKeyType).unwrap().downcast::<CFString>().unwrap();
+            let value = self.0.get(kSecPropertyKeyValue).unwrap();
 
-            if type_ == CFString::wrap_under_get_rule(kSecPropertyTypeSection) {
-                PropertyType::Section(PropertySection(CFArray::wrap_under_get_rule((*value).cast())))
-            } else if type_ == CFString::wrap_under_get_rule(kSecPropertyTypeString) {
-                PropertyType::String(CFString::wrap_under_get_rule((*value).cast()))
+            if &*type_ == kSecPropertyTypeSection {
+                let array = value.downcast::<CFArray>().unwrap();
+                PropertyType::Section(PropertySection(CFRetained::cast_unchecked(array)))
+            } else if &*type_ == kSecPropertyTypeString {
+                PropertyType::String(value.downcast().unwrap())
             } else {
                 PropertyType::__Unknown
             }
@@ -149,7 +141,7 @@ impl CertificateProperty {
 /// A "section" property.
 ///
 /// Sections are sequences of other properties.
-pub struct PropertySection(CFArray<CFDictionary>);
+pub struct PropertySection(CFRetained<CFArray<CFDictionary<CFString, CFType>>>);
 
 impl PropertySection {
     /// Returns an iterator over the properties in this section.
@@ -171,14 +163,14 @@ impl<'a> IntoIterator for &'a PropertySection {
 }
 
 /// An iterator over the properties in a section.
-pub struct PropertySectionIter<'a>(CFArrayIterator<'a, CFDictionary>);
+pub struct PropertySectionIter<'a>(CFArrayIter<'a, CFDictionary<CFString, CFType>>);
 
 impl Iterator for PropertySectionIter<'_> {
     type Item = CertificateProperty;
 
     #[inline]
     fn next(&mut self) -> Option<CertificateProperty> {
-        self.0.next().map(|t| CertificateProperty(t.clone()))
+        self.0.next().map(|t| CertificateProperty(t.retain()))
     }
 
     #[inline(always)]
@@ -192,7 +184,7 @@ pub enum PropertyType {
     /// A section.
     Section(PropertySection),
     /// A string.
-    String(CFString),
+    String(CFRetained<CFString>),
     #[doc(hidden)]
     __Unknown,
 }

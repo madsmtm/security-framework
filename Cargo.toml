@@ -1,11 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "security-framework-sys",
-    "security-framework",
-    "iostest",
-    "systest"
-]
+members = ["security-framework-sys", "security-framework", "iostest", "systest"]
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -100 }
@@ -24,3 +19,7 @@ redundant_closure_for_method_calls = "allow"
 similar_names = "allow"
 unnested_or_patterns = "allow"
 wildcard_imports = "allow"
+
+[patch.crates-io]
+objc2-core-foundation = { path = "../objc2/framework-crates/objc2-core-foundation" }
+objc2-security = { path = "../objc2/framework-crates/objc2-security" }

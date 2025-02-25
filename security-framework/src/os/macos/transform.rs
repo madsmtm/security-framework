@@ -1,34 +1,31 @@
 //! Transform support
-use core_foundation::{declare_TCFType, impl_TCFType};
-use core_foundation::base::{CFType, TCFType};
-use core_foundation::error::CFError;
-use core_foundation::string::CFString;
-use security_framework_sys::transform::*;
-use std::ptr;
+#![allow(deprecated)]
+
+use objc2_core_foundation::{CFError, CFRetained, CFString, CFType};
+use objc2_security::*;
+use std::ptr::{self, NonNull};
 
 declare_TCFType! {
     /// A type representing a transform.
-    SecTransform, SecTransformRef
+    SecTransform, SecTransform
 }
-impl_TCFType!(SecTransform, SecTransformRef, SecTransformGetTypeID);
 
 unsafe impl Sync for SecTransform {}
 unsafe impl Send for SecTransform {}
 
 impl SecTransform {
     /// Sets an attribute of the transform.
-    pub fn set_attribute<T>(&mut self, key: &CFString, value: &T) -> Result<(), CFError>
-    where T: TCFType {
+    pub fn set_attribute(&mut self, key: &CFString, value: &CFType) -> Result<(), CFRetained<CFError>> {
         unsafe {
             let mut error = ptr::null_mut();
             SecTransformSetAttribute(
-                self.0,
-                key.as_concrete_TypeRef(),
-                value.as_CFTypeRef(),
+                self.as_raw(),
+                key,
+                value,
                 &mut error,
             );
-            if !error.is_null() {
-                return Err(CFError::wrap_under_create_rule(error));
+            if let Some(error) = NonNull::new(error) {
+                return Err(CFRetained::from_raw(error));
             }
 
             Ok(())
@@ -39,15 +36,15 @@ impl SecTransform {
     ///
     /// The return type depends on the type of transform.
     // FIXME: deprecate and remove: don't expose CFType in Rust APIs.
-    pub fn execute(&mut self) -> Result<CFType, CFError> {
+    pub fn execute(&mut self) -> Result<CFRetained<CFType>, CFRetained<CFError>> {
         unsafe {
             let mut error = ptr::null_mut();
-            let result = SecTransformExecute(self.0, &mut error);
+            let result = SecTransformExecute(self.as_raw(), &mut error);
             if result.is_null() {
-                return Err(CFError::wrap_under_create_rule(error));
+                return Err(unsafe { CFRetained::from_raw(NonNull::new(error).unwrap()) });
             }
 
-            Ok(CFType::wrap_under_create_rule(result))
+            Ok(result)
         }
     }
 }

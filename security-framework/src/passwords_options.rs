@@ -1,14 +1,17 @@
 //! Support for password options, to be used with the passwords module
 
 use crate::access_control::SecAccessControl;
-use core_foundation::base::{CFOptionFlags, CFType, TCFType};
-use core_foundation::number::CFNumber;
-use core_foundation::string::CFString;
-use security_framework_sys::access_control::*;
-use security_framework_sys::item::{
-    kSecAttrAccessControl, kSecAttrAccessGroup, kSecAttrAccount, kSecAttrAuthenticationType, kSecAttrPath, kSecAttrPort, kSecAttrProtocol, kSecAttrSecurityDomain, kSecAttrServer, kSecAttrService, kSecClass, kSecClassGenericPassword, kSecClassInternetPassword
+use objc2_core_foundation::{CFOptionFlags, CFType};
+use objc2_core_foundation::CFNumber;
+use objc2_core_foundation::CFString;
+use objc2_security::{
+    kSecAttrAccessControl, kSecAttrAccessGroup, kSecAttrAccount,
+    kSecAttrAuthenticationType, kSecAttrPath, kSecAttrPort, kSecAttrProtocol,
+    kSecAttrSecurityDomain, kSecAttrServer, kSecAttrService, kSecClass,
+    kSecClassGenericPassword, kSecClassInternetPassword,
+    SecAccessControlCreateFlags,
 };
-use security_framework_sys::keychain::{SecAuthenticationType, SecProtocolType};
+use objc2_security::{SecAuthenticationType, SecProtocolType};
 
 /// `PasswordOptions` constructor
 pub struct PasswordOptions {
@@ -22,26 +25,26 @@ bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct AccessControlOptions: CFOptionFlags {
         /** Constraint to access an item with either biometry or passcode. */
-        const USER_PRESENCE = kSecAccessControlUserPresence;
+        const USER_PRESENCE = SecAccessControlCreateFlags::UserPresence.0;
         #[cfg(feature = "OSX_10_13")]
         /** Constraint to access an item with Touch ID for any enrolled fingers, or Face ID. */
-        const BIOMETRY_ANY = kSecAccessControlBiometryAny;
+        const BIOMETRY_ANY = SecAccessControlCreateFlags::BiometryAny.0;
         #[cfg(feature = "OSX_10_13")]
         /** Constraint to access an item with Touch ID for currently enrolled fingers, or from Face ID with the currently enrolled user. */
-        const BIOMETRY_CURRENT_SET = kSecAccessControlBiometryCurrentSet;
+        const BIOMETRY_CURRENT_SET = SecAccessControlCreateFlags::BiometryCurrentSet.0;
         /** Constraint to access an item with a passcode. */
-        const DEVICE_PASSCODE = kSecAccessControlDevicePasscode;
+        const DEVICE_PASSCODE = SecAccessControlCreateFlags::DevicePasscode.0;
         #[cfg(feature = "OSX_10_15")]
         /** Constraint to access an item with a watch. */
-        const WATCH = kSecAccessControlWatch;
+        const WATCH = SecAccessControlCreateFlags::Watch.0;
         /** Indicates that at least one constraint must be satisfied. */
-        const OR = kSecAccessControlOr;
+        const OR = SecAccessControlCreateFlags::Or.0;
         /** Indicates that all constraints must be satisfied. */
-        const AND = kSecAccessControlAnd;
+        const AND = SecAccessControlCreateFlags::And.0;
         /** Enable a private key to be used in signing a block of data or verifying a signed block. */
-        const PRIVATE_KEY_USAGE = kSecAccessControlPrivateKeyUsage;
+        const PRIVATE_KEY_USAGE = SecAccessControlCreateFlags::PrivateKeyUsage.0;
         /** Option to use an application-provided password for data encryption key generation. */
-        const APPLICATION_PASSWORD = kSecAccessControlApplicationPassword;
+        const APPLICATION_PASSWORD = SecAccessControlCreateFlags::ApplicationPassword.0;
     }
 }
 
@@ -56,8 +59,8 @@ impl PasswordOptions {
                 unsafe { CFString::wrap_under_get_rule(kSecClass) },
                 unsafe { CFString::wrap_under_get_rule(kSecClassGenericPassword).into_CFType() },
             ),
-            (unsafe { CFString::wrap_under_get_rule(kSecAttrService) }, CFString::from(service).into_CFType()),
-            (unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) }, CFString::from(account).into_CFType()),
+            (unsafe { CFString::wrap_under_get_rule(kSecAttrService) }, CFString::from_str(service).into_CFType()),
+            (unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) }, CFString::from_str(account).into_CFType()),
         ];
         #[allow(deprecated)]
         Self { query }
@@ -81,19 +84,19 @@ impl PasswordOptions {
                 unsafe { CFString::wrap_under_get_rule(kSecClass) },
                 unsafe { CFString::wrap_under_get_rule(kSecClassInternetPassword) }.into_CFType(),
             ),
-            (unsafe { CFString::wrap_under_get_rule(kSecAttrServer) }, CFString::from(server).into_CFType()),
-            (unsafe { CFString::wrap_under_get_rule(kSecAttrPath) }, CFString::from(path).into_CFType()),
-            (unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) }, CFString::from(account).into_CFType()),
-            (unsafe { CFString::wrap_under_get_rule(kSecAttrProtocol) }, CFNumber::from(protocol as i32).into_CFType()),
+            (unsafe { CFString::wrap_under_get_rule(kSecAttrServer) }, CFString::from_str(server).into_CFType()),
+            (unsafe { CFString::wrap_under_get_rule(kSecAttrPath) }, CFString::from_str(path).into_CFType()),
+            (unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) }, CFString::from_str(account).into_CFType()),
+            (unsafe { CFString::wrap_under_get_rule(kSecAttrProtocol) }, CFNumber::from(protocol.0 as i32).into_CFType()),
             (
                 unsafe { CFString::wrap_under_get_rule(kSecAttrAuthenticationType) },
-                CFNumber::from(authentication_type as i32).into_CFType(),
+                CFNumber::from(authentication_type.0 as i32).into_CFType(),
             ),
         ];
         if let Some(domain) = security_domain {
             query.push((
                 unsafe { CFString::wrap_under_get_rule(kSecAttrSecurityDomain) },
-                CFString::from(domain).into_CFType(),
+                CFString::from_str(domain).into_CFType(),
             ));
         }
         if let Some(port) = port {
@@ -120,7 +123,7 @@ impl PasswordOptions {
         #[allow(deprecated)]
         self.query.push((
             unsafe { CFString::wrap_under_get_rule(kSecAttrAccessGroup) },
-            CFString::from(group).into_CFType(),
+            CFString::from_str(group).into_CFType(),
         ));
     }
 }

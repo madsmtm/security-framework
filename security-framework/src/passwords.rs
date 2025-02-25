@@ -3,20 +3,16 @@
 //! If you want the extended keychain facilities only available on macOS, use the
 //! version of these functions in the macOS extensions module.
 
+use std::ptr::NonNull;
+
 use crate::base::Result;
 use crate::passwords_options::PasswordOptions;
 use crate::{cvt, Error};
-use core_foundation::base::TCFType;
-use core_foundation::boolean::CFBoolean;
-use core_foundation::data::CFData;
-use core_foundation::dictionary::CFDictionary;
-use core_foundation::string::CFString;
-use core_foundation_sys::base::{CFGetTypeID, CFRelease, CFTypeRef};
-use core_foundation_sys::data::CFDataRef;
-use security_framework_sys::base::{errSecDuplicateItem, errSecParam};
-use security_framework_sys::item::{kSecReturnData, kSecValueData};
-use security_framework_sys::keychain::{SecAuthenticationType, SecProtocolType};
-use security_framework_sys::keychain_item::{
+use objc2_core_foundation::{CFBoolean, CFData, CFDictionary, CFRetained, CFString, CFType};
+use objc2_security::{errSecDuplicateItem, errSecParam};
+use objc2_security::{kSecReturnData, kSecValueData};
+use objc2_security::{SecAuthenticationType, SecProtocolType};
+use objc2_security::{
     SecItemAdd, SecItemCopyMatching, SecItemDelete, SecItemUpdate,
 };
 
@@ -44,8 +40,8 @@ pub fn get_generic_password(service: &str, account: &str) -> Result<Vec<u8>> {
     ));
     #[allow(deprecated)]
     let params = CFDictionary::from_CFType_pairs(&options.query);
-    let mut ret: CFTypeRef = std::ptr::null();
-    cvt(unsafe { SecItemCopyMatching(params.as_concrete_TypeRef(), &mut ret) })?;
+    let mut ret: *mut CFType = std::ptr::null();
+    cvt(unsafe { SecItemCopyMatching(params, &mut ret) })?;
     get_password_and_release(ret)
 }
 
@@ -55,7 +51,7 @@ pub fn delete_generic_password(service: &str, account: &str) -> Result<()> {
     let options = PasswordOptions::new_generic_password(service, account);
     #[allow(deprecated)]
     let params = CFDictionary::from_CFType_pairs(&options.query);
-    cvt(unsafe { SecItemDelete(params.as_concrete_TypeRef()) })
+    cvt(unsafe { SecItemDelete(params) })
 }
 
 /// Set an internet password for the given endpoint parameters.
@@ -110,8 +106,8 @@ pub fn get_internet_password(
     ));
     #[allow(deprecated)]
     let params = CFDictionary::from_CFType_pairs(&options.query);
-    let mut ret: CFTypeRef = std::ptr::null();
-    cvt(unsafe { SecItemCopyMatching(params.as_concrete_TypeRef(), &mut ret) })?;
+    let mut ret: *mut CFType = std::ptr::null();
+    cvt(unsafe { SecItemCopyMatching(params, &mut ret) })?;
     get_password_and_release(ret)
 }
 
@@ -137,7 +133,7 @@ pub fn delete_internet_password(
     );
     #[allow(deprecated)]
     let params = CFDictionary::from_CFType_pairs(&options.query);
-    cvt(unsafe { SecItemDelete(params.as_concrete_TypeRef()) })
+    cvt(unsafe { SecItemDelete(params) })
 }
 
 // This starts by trying to create the password with the given query params.
@@ -152,11 +148,11 @@ fn set_password_internal(options: &mut PasswordOptions, password: &[u8]) -> Resu
 
     let params = CFDictionary::from_CFType_pairs(&options.query);
     let mut ret = std::ptr::null();
-    let status = unsafe { SecItemAdd(params.as_concrete_TypeRef(), &mut ret) };
+    let status = unsafe { SecItemAdd(params, &mut ret) };
     if status == errSecDuplicateItem {
         let params = CFDictionary::from_CFType_pairs(&options.query[0..query_len]);
         let update = CFDictionary::from_CFType_pairs(&options.query[query_len..]);
-        cvt(unsafe { SecItemUpdate(params.as_concrete_TypeRef(), update.as_concrete_TypeRef()) })
+        cvt(unsafe { SecItemUpdate(params, update) })
     } else {
         cvt(status)
     }
@@ -167,21 +163,12 @@ fn set_password_internal(options: &mut PasswordOptions, password: &[u8]) -> Resu
 // # Safety
 // The data element passed in is assumed to have been returned from a Copy
 // call, so it's released after we are done with it.
-fn get_password_and_release(data: CFTypeRef) -> Result<Vec<u8>> {
-    if !data.is_null() {
-        let type_id = unsafe { CFGetTypeID(data) };
-        if type_id == CFData::type_id() {
-            let val = unsafe { CFData::wrap_under_create_rule(data as CFDataRef) };
-            let mut vec = Vec::new();
-            if !val.is_empty() {
-                vec.extend_from_slice(val.bytes());
-            }
-            return Ok(vec);
+fn get_password_and_release(data: *mut CFType) -> Result<Vec<u8>> {
+    if let Some(data) = NonNull::new(data) {
+        let data = unsafe { CFRetained::from_raw(data) };
+        if let Some(data) = data.downcast_ref::<CFData>() {
+            return Ok(data.to_vec());
         }
-        // unexpected: we got a reference to some other type.
-        // Release it to make sure there's no leak, but
-        // we can't return the password in this case.
-        unsafe { CFRelease(data) };
     }
     Err(Error::from_code(errSecParam))
 }
@@ -189,7 +176,7 @@ fn get_password_and_release(data: CFTypeRef) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use security_framework_sys::base::errSecItemNotFound;
+    use objc2_security::errSecItemNotFound;
 
     #[test]
     fn missing_generic() {

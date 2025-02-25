@@ -1,16 +1,14 @@
 //! Identity support.
 
-use core_foundation::{declare_TCFType, impl_TCFType};
-use core_foundation::base::{TCFType, ToVoid};
-use core_foundation::dictionary::CFMutableDictionary;
-use security_framework_sys::base::SecIdentityRef;
-use security_framework_sys::identity::{
-    SecIdentityCopyCertificate, SecIdentityCopyPrivateKey, SecIdentityGetTypeID,
+
+use objc2_core_foundation::CFDictionary;
+use objc2_security::{
+    SecIdentityCopyCertificate, SecIdentityCopyPrivateKey,
 };
-use security_framework_sys::item::kSecValueRef;
-use security_framework_sys::keychain_item::SecItemDelete;
+use objc2_security::kSecValueRef;
+use objc2_security::SecItemDelete;
 use std::fmt;
-use std::ptr;
+use std::ptr::{self, NonNull};
 
 use crate::base::{Error, Result};
 use crate::certificate::SecCertificate;
@@ -21,9 +19,8 @@ declare_TCFType! {
     /// A type representing an identity.
     ///
     /// Identities are a certificate paired with the corresponding private key.
-    SecIdentity, SecIdentityRef
+    SecIdentity, SecIdentity
 }
-impl_TCFType!(SecIdentity, SecIdentityRef, SecIdentityGetTypeID);
 
 unsafe impl Sync for SecIdentity {}
 unsafe impl Send for SecIdentity {}
@@ -47,7 +44,7 @@ impl SecIdentity {
     pub fn certificate(&self) -> Result<SecCertificate> {
         unsafe {
             let mut certificate = ptr::null_mut();
-            cvt(SecIdentityCopyCertificate(self.0, &mut certificate))?;
+            cvt(SecIdentityCopyCertificate(&self.0, NonNull::from(&mut certificate)))?;
             Ok(SecCertificate::wrap_under_create_rule(certificate))
         }
     }
@@ -56,19 +53,19 @@ impl SecIdentity {
     pub fn private_key(&self) -> Result<SecKey> {
         unsafe {
             let mut key = ptr::null_mut();
-            cvt(SecIdentityCopyPrivateKey(self.0, &mut key))?;
+            cvt(SecIdentityCopyPrivateKey(&self.0, NonNull::from(&mut key)))?;
             Ok(SecKey::wrap_under_create_rule(key))
         }
     }
 
     /// Translates to `SecItemDelete`, passing in the `SecIdentityRef`
     pub fn delete(&self) -> Result<(), Error> {
-        let query = CFMutableDictionary::from_CFType_pairs(&[(
-            unsafe { kSecValueRef }.to_void(),
-            self.to_void(),
-        )]);
+        let query = CFDictionary::from_slices(
+            &[unsafe { kSecValueRef }],
+            &[self.as_raw()],
+        );
 
-        cvt(unsafe { SecItemDelete(query.as_concrete_TypeRef()) })
+        cvt(unsafe { SecItemDelete(query.as_opaque()) })
     }
 }
 

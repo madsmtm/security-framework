@@ -71,22 +71,21 @@
 //!     });
 //! }
 //! ```
-#[allow(unused_imports)]
-use core_foundation::array::{CFArray, CFArrayRef};
-use core_foundation::{declare_TCFType, impl_TCFType};
-use core_foundation::base::{Boolean, TCFType};
+#![allow(unused_imports)]
+#![allow(deprecated)]
+
+use objc2_core_foundation::{kCFAllocatorDefault, CFArray};
+
 #[cfg(feature = "alpn")]
-use core_foundation::string::CFString;
-use core_foundation_sys::base::{kCFAllocatorDefault, OSStatus};
+use objc2_core_foundation::CFString;
+use objc2_security::errSSLClientCertRequested;
+use objc2_security::errSSLPeerAuthCompleted;
+use objc2_security::errSSLWouldBlock;
 use std::os::raw::c_void;
+use std::ptr::NonNull;
 
-#[allow(unused_imports)]
-use security_framework_sys::base::{
-    errSecBadReq, errSecIO, errSecNotTrusted, errSecSuccess, errSecTrustSettingDeny,
-    errSecUnimplemented,
-};
+use objc2_security::*;
 
-use security_framework_sys::secure_transport::*;
 use std::any::Any;
 use std::cmp;
 use std::fmt;
@@ -98,36 +97,35 @@ use std::ptr;
 use std::result;
 use std::slice;
 
-use crate::base::{Error, Result};
+use crate::base::{Error, Result, OSStatus};
 use crate::certificate::SecCertificate;
 use crate::cipher_suite::CipherSuite;
 use crate::identity::SecIdentity;
 use crate::import_export::Pkcs12ImportOptions;
 use crate::policy::SecPolicy;
 use crate::trust::SecTrust;
-use crate::{cvt, AsInner};
-use security_framework_sys::base::errSecParam;
+use crate::cvt;
 
 /// Specifies a side of a TLS session.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct SslProtocolSide(SSLProtocolSide);
+pub struct SslProtocolSide(objc2_security::SSLProtocolSide);
 
 impl SslProtocolSide {
     /// The client side of the session.
-    pub const CLIENT: Self = Self(kSSLClientSide);
+    pub const CLIENT: Self = Self(objc2_security::SSLProtocolSide::ClientSide);
     /// The server side of the session.
-    pub const SERVER: Self = Self(kSSLServerSide);
+    pub const SERVER: Self = Self(objc2_security::SSLProtocolSide::ServerSide);
 }
 
 /// Specifies the type of TLS session.
 #[derive(Debug, Copy, Clone)]
-pub struct SslConnectionType(SSLConnectionType);
+pub struct SslConnectionType(objc2_security::SSLConnectionType);
 
 impl SslConnectionType {
     /// A DTLS session.
-    pub const DATAGRAM: Self = Self(kSSLDatagramType);
+    pub const DATAGRAM: Self = Self(objc2_security::SSLConnectionType::DatagramType);
     /// A traditional TLS stream.
-    pub const STREAM: Self = Self(kSSLStreamType);
+    pub const STREAM: Self = Self(objc2_security::SSLConnectionType::StreamType);
 }
 
 /// An error or intermediate state after a TLS handshake attempt.
@@ -324,107 +322,105 @@ impl<S> MidHandshakeClientBuilder<S> {
 
 /// Specifies the state of a TLS session.
 #[derive(Debug, PartialEq, Eq)]
-pub struct SessionState(SSLSessionState);
+pub struct SessionState(objc2_security::SSLSessionState);
 
 impl SessionState {
     /// The session has not yet started.
-    pub const IDLE: Self = Self(kSSLIdle);
+    pub const IDLE: Self = Self(objc2_security::SSLSessionState::Idle);
 
     /// The session is in the handshake process.
-    pub const HANDSHAKE: Self = Self(kSSLHandshake);
+    pub const HANDSHAKE: Self = Self(objc2_security::SSLSessionState::Handshake);
 
     /// The session is connected.
-    pub const CONNECTED: Self = Self(kSSLConnected);
+    pub const CONNECTED: Self = Self(objc2_security::SSLSessionState::Connected);
 
     /// The session has been terminated.
-    pub const CLOSED: Self = Self(kSSLClosed);
+    pub const CLOSED: Self = Self(objc2_security::SSLSessionState::Closed);
 
     /// The session has been aborted due to an error.
-    pub const ABORTED: Self = Self(kSSLAborted);
+    pub const ABORTED: Self = Self(objc2_security::SSLSessionState::Aborted);
 }
 
 /// Specifies a server's requirement for client certificates.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct SslAuthenticate(SSLAuthenticate);
+pub struct SslAuthenticate(objc2_security::SSLAuthenticate);
 
 impl SslAuthenticate {
     /// Do not request a client certificate.
-    pub const NEVER: Self = Self(kNeverAuthenticate);
+    pub const NEVER: Self = Self(objc2_security::SSLAuthenticate::NeverAuthenticate);
 
     /// Require a client certificate.
-    pub const ALWAYS: Self = Self(kAlwaysAuthenticate);
+    pub const ALWAYS: Self = Self(objc2_security::SSLAuthenticate::AlwaysAuthenticate);
 
     /// Request but do not require a client certificate.
-    pub const TRY: Self = Self(kTryAuthenticate);
+    pub const TRY: Self = Self(objc2_security::SSLAuthenticate::TryAuthenticate);
 }
 
 /// Specifies the state of client certificate processing.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct SslClientCertificateState(SSLClientCertificateState);
+pub struct SslClientCertificateState(objc2_security::SSLClientCertificateState);
 
 impl SslClientCertificateState {
     /// A client certificate has not been requested or sent.
-    pub const NONE: Self = Self(kSSLClientCertNone);
+    pub const NONE: Self = Self(objc2_security::SSLClientCertificateState::ClientCertNone);
 
     /// A client certificate has been requested but not recieved.
-    pub const REQUESTED: Self = Self(kSSLClientCertRequested);
+    pub const REQUESTED: Self = Self(objc2_security::SSLClientCertificateState::ClientCertRequested);
     /// A client certificate has been received and successfully validated.
-    pub const SENT: Self = Self(kSSLClientCertSent);
+    pub const SENT: Self = Self(objc2_security::SSLClientCertificateState::ClientCertSent);
 
     /// A client certificate has been received but has failed to validate.
-    pub const REJECTED: Self = Self(kSSLClientCertRejected);
+    pub const REJECTED: Self = Self(objc2_security::SSLClientCertificateState::ClientCertRejected);
 }
 
 /// Specifies protocol versions.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct SslProtocol(SSLProtocol);
+pub struct SslProtocol(objc2_security::SSLProtocol);
 
 impl SslProtocol {
     /// No protocol has been or should be negotiated or specified; use the default.
-    pub const UNKNOWN: Self = Self(kSSLProtocolUnknown);
+    pub const UNKNOWN: Self = Self(objc2_security::SSLProtocol::SSLProtocolUnknown);
 
     /// The SSL 3.0 protocol is preferred, though SSL 2.0 may be used if the peer does not support
     /// SSL 3.0.
-    pub const SSL3: Self = Self(kSSLProtocol3);
+    pub const SSL3: Self = Self(objc2_security::SSLProtocol::SSLProtocol3);
 
     /// The TLS 1.0 protocol is preferred, though lower versions may be used
     /// if the peer does not support TLS 1.0.
-    pub const TLS1: Self = Self(kTLSProtocol1);
+    pub const TLS1: Self = Self(objc2_security::SSLProtocol::TLSProtocol1);
 
     /// The TLS 1.1 protocol is preferred, though lower versions may be used
     /// if the peer does not support TLS 1.1.
-    pub const TLS11: Self = Self(kTLSProtocol11);
+    pub const TLS11: Self = Self(objc2_security::SSLProtocol::TLSProtocol11);
 
     /// The TLS 1.2 protocol is preferred, though lower versions may be used
     /// if the peer does not support TLS 1.2.
-    pub const TLS12: Self = Self(kTLSProtocol12);
+    pub const TLS12: Self = Self(objc2_security::SSLProtocol::TLSProtocol12);
 
     /// The TLS 1.3 protocol is preferred, though lower versions may be used
     /// if the peer does not support TLS 1.3.
-    pub const TLS13: Self = Self(kTLSProtocol13);
+    pub const TLS13: Self = Self(objc2_security::SSLProtocol::TLSProtocol13);
 
     /// Only the SSL 2.0 protocol is accepted.
-    pub const SSL2: Self = Self(kSSLProtocol2);
+    pub const SSL2: Self = Self(objc2_security::SSLProtocol::SSLProtocol2);
 
     /// The `DTLSv1` protocol is preferred.
-    pub const DTLS1: Self = Self(kDTLSProtocol1);
+    pub const DTLS1: Self = Self(objc2_security::SSLProtocol::DTLSProtocol1);
 
     /// Only the SSL 3.0 protocol is accepted.
-    pub const SSL3_ONLY: Self = Self(kSSLProtocol3Only);
+    pub const SSL3_ONLY: Self = Self(objc2_security::SSLProtocol::SSLProtocol3Only);
 
     /// Only the TLS 1.0 protocol is accepted.
-    pub const TLS1_ONLY: Self = Self(kTLSProtocol1Only);
+    pub const TLS1_ONLY: Self = Self(objc2_security::SSLProtocol::TLSProtocol1Only);
 
     /// All supported TLS/SSL versions are accepted.
-    pub const ALL: Self = Self(kSSLProtocolAll);
+    pub const ALL: Self = Self(objc2_security::SSLProtocol::SSLProtocolAll);
 }
 
 declare_TCFType! {
     /// A Secure Transport SSL/TLS context object.
-    SslContext, SSLContextRef
+    SslContext, SSLContext
 }
-
-impl_TCFType!(SslContext, SSLContextRef, SSLContextGetTypeID);
 
 impl fmt::Debug for SslContext {
     #[cold]
@@ -440,31 +436,20 @@ impl fmt::Debug for SslContext {
 unsafe impl Sync for SslContext {}
 unsafe impl Send for SslContext {}
 
-impl AsInner for SslContext {
-    type Inner = SSLContextRef;
-
-    #[inline(always)]
-    fn as_inner(&self) -> SSLContextRef {
-        self.0
-    }
-}
-
 macro_rules! impl_options {
     ($($(#[$a:meta])* const $opt:ident: $get:ident & $set:ident,)*) => {
         $(
-            #[allow(deprecated)]
             $(#[$a])*
             #[inline(always)]
             pub fn $set(&mut self, value: bool) -> Result<()> {
-                unsafe { cvt(SSLSetSessionOption(self.0, $opt, value as Boolean)) }
+                unsafe { cvt(SSLSetSessionOption(&self.0, SSLSessionOption::$opt, value)) }
             }
 
-            #[allow(deprecated)]
             $(#[$a])*
             #[inline]
             pub fn $get(&self) -> Result<bool> {
                 let mut value = 0;
-                unsafe { cvt(SSLGetSessionOption(self.0, $opt, &mut value))?; }
+                unsafe { cvt(SSLGetSessionOption(&self.0, SSLSessionOption::$opt, NonNull::from(&mut value)))?; }
                 Ok(value != 0)
             }
         )*
@@ -478,7 +463,7 @@ impl SslContext {
     pub fn new(side: SslProtocolSide, type_: SslConnectionType) -> Result<Self> {
         unsafe {
             let ctx = SSLCreateContext(kCFAllocatorDefault, side.0, type_.0);
-            Ok(Self(ctx))
+            Ok(Self(ctx.unwrap()))
         }
     }
 
@@ -494,7 +479,7 @@ impl SslContext {
     pub fn set_peer_domain_name(&mut self, peer_name: &str) -> Result<()> {
         unsafe {
             // SSLSetPeerDomainName doesn't need a null terminated string
-            cvt(SSLSetPeerDomainName(self.0, peer_name.as_ptr().cast(), peer_name.len()))
+            cvt(SSLSetPeerDomainName(&self.0, peer_name.as_ptr().cast(), peer_name.len()))
         }
     }
 
@@ -502,9 +487,9 @@ impl SslContext {
     pub fn peer_domain_name(&self) -> Result<String> {
         unsafe {
             let mut len = 0;
-            cvt(SSLGetPeerDomainNameLength(self.0, &mut len))?;
+            cvt(SSLGetPeerDomainNameLength(&self.0, NonNull::from(&mut len)))?;
             let mut buf = vec![0; len];
-            cvt(SSLGetPeerDomainName(self.0, buf.as_mut_ptr().cast(), &mut len))?;
+            cvt(SSLGetPeerDomainName(&self.0, NonNull::new(buf.as_mut_ptr().cast()).unwrap(), NonNull::from(&mut len)))?;
             Ok(String::from_utf8(buf).unwrap())
         }
     }
@@ -525,7 +510,7 @@ impl SslContext {
         arr.extend(certs.iter().map(|c| c.as_CFType()));
         let certs = CFArray::from_CFTypes(&arr);
 
-        unsafe { cvt(SSLSetCertificate(self.0, certs.as_concrete_TypeRef())) }
+        unsafe { cvt(SSLSetCertificate(&self.0, certs)) }
     }
 
     /// Sets the peer ID of this session.
@@ -536,7 +521,7 @@ impl SslContext {
     /// previous session can be resumed without requiring a full handshake.
     #[inline]
     pub fn set_peer_id(&mut self, peer_id: &[u8]) -> Result<()> {
-        unsafe { cvt(SSLSetPeerID(self.0, peer_id.as_ptr().cast(), peer_id.len())) }
+        unsafe { cvt(SSLSetPeerID(&self.0, peer_id.as_ptr().cast(), peer_id.len())) }
     }
 
     /// Returns the peer ID of this session.
@@ -544,7 +529,7 @@ impl SslContext {
         unsafe {
             let mut ptr = ptr::null();
             let mut len = 0;
-            cvt(SSLGetPeerID(self.0, &mut ptr, &mut len))?;
+            cvt(SSLGetPeerID(&self.0, NonNull::from(&mut ptr), NonNull::from(&mut len)))?;
             if ptr.is_null() {
                 Ok(None)
             } else {
@@ -557,12 +542,12 @@ impl SslContext {
     pub fn supported_ciphers(&self) -> Result<Vec<CipherSuite>> {
         unsafe {
             let mut num_ciphers = 0;
-            cvt(SSLGetNumberSupportedCiphers(self.0, &mut num_ciphers))?;
+            cvt(SSLGetNumberSupportedCiphers(&self.0, NonNull::from(&mut num_ciphers)))?;
             let mut ciphers = vec![0; num_ciphers];
             cvt(SSLGetSupportedCiphers(
-                self.0,
-                ciphers.as_mut_ptr(),
-                &mut num_ciphers,
+                &self.0,
+                NonNull::new(ciphers.as_mut_ptr()).unwrap(),
+                NonNull::from(&mut num_ciphers),
             ))?;
             Ok(ciphers.iter().map(|c| CipherSuite::from_raw(*c)).collect())
         }
@@ -573,12 +558,12 @@ impl SslContext {
     pub fn enabled_ciphers(&self) -> Result<Vec<CipherSuite>> {
         unsafe {
             let mut num_ciphers = 0;
-            cvt(SSLGetNumberEnabledCiphers(self.0, &mut num_ciphers))?;
+            cvt(SSLGetNumberEnabledCiphers(&self.0, NonNull::from(&mut num_ciphers)))?;
             let mut ciphers = vec![0; num_ciphers];
             cvt(SSLGetEnabledCiphers(
-                self.0,
-                ciphers.as_mut_ptr(),
-                &mut num_ciphers,
+                &self.0,
+                NonNull::new(ciphers.as_mut_ptr()).unwrap(),
+                NonNull::from(&mut num_ciphers),
             ))?;
             Ok(ciphers.iter().map(|c| CipherSuite::from_raw(*c)).collect())
         }
@@ -589,7 +574,7 @@ impl SslContext {
         let ciphers = ciphers.iter().map(|c| c.to_raw()).collect::<Vec<_>>();
         unsafe {
             cvt(SSLSetEnabledCiphers(
-                self.0,
+                &self.0,
                 ciphers.as_ptr(),
                 ciphers.len(),
             ))
@@ -601,7 +586,7 @@ impl SslContext {
     pub fn negotiated_cipher(&self) -> Result<CipherSuite> {
         unsafe {
             let mut cipher = 0;
-            cvt(SSLGetNegotiatedCipher(self.0, &mut cipher))?;
+            cvt(SSLGetNegotiatedCipher(&self.0, NonNull::from(&mut cipher)))?;
             Ok(CipherSuite::from_raw(cipher))
         }
     }
@@ -611,7 +596,7 @@ impl SslContext {
     /// Should only be called on server-side sessions.
     #[inline]
     pub fn set_client_side_authenticate(&mut self, auth: SslAuthenticate) -> Result<()> {
-        unsafe { cvt(SSLSetClientSideAuthenticate(self.0, auth.0)) }
+        unsafe { cvt(SSLSetClientSideAuthenticate(&self.0, auth.0)) }
     }
 
     /// Returns the state of client certificate processing.
@@ -620,7 +605,7 @@ impl SslContext {
         let mut state = 0;
 
         unsafe {
-            cvt(SSLGetClientCertificateState(self.0, &mut state))?;
+            cvt(SSLGetClientCertificateState(&self.0, NonNull::from(&mut state)))?;
         }
         Ok(SslClientCertificateState(state))
     }
@@ -638,7 +623,7 @@ impl SslContext {
 
         unsafe {
             let mut trust = ptr::null_mut();
-            cvt(SSLCopyPeerTrust(self.0, &mut trust))?;
+            cvt(SSLCopyPeerTrust(&self.0, NonNull::from(&mut trust)))?;
             if trust.is_null() {
                 Ok(None)
             } else {
@@ -652,7 +637,7 @@ impl SslContext {
     pub fn state(&self) -> Result<SessionState> {
         unsafe {
             let mut state = 0;
-            cvt(SSLGetSessionState(self.0, &mut state))?;
+            cvt(SSLGetSessionState(&self.0, NonNull::from(&mut state)))?;
             Ok(SessionState(state))
         }
     }
@@ -662,7 +647,7 @@ impl SslContext {
     pub fn negotiated_protocol_version(&self) -> Result<SslProtocol> {
         unsafe {
             let mut version = 0;
-            cvt(SSLGetNegotiatedProtocolVersion(self.0, &mut version))?;
+            cvt(SSLGetNegotiatedProtocolVersion(&self.0, NonNull::from(&mut version)))?;
             Ok(SslProtocol(version))
         }
     }
@@ -672,7 +657,7 @@ impl SslContext {
     pub fn protocol_version_max(&self) -> Result<SslProtocol> {
         unsafe {
             let mut version = 0;
-            cvt(SSLGetProtocolVersionMax(self.0, &mut version))?;
+            cvt(SSLGetProtocolVersionMax(&self.0, NonNull::from(&mut version)))?;
             Ok(SslProtocol(version))
         }
     }
@@ -680,7 +665,7 @@ impl SslContext {
     /// Sets the maximum protocol version allowed by the session.
     #[inline]
     pub fn set_protocol_version_max(&mut self, max_version: SslProtocol) -> Result<()> {
-        unsafe { cvt(SSLSetProtocolVersionMax(self.0, max_version.0)) }
+        unsafe { cvt(SSLSetProtocolVersionMax(&self.0, max_version.0)) }
     }
 
     /// Returns the minimum protocol version allowed by the session.
@@ -688,7 +673,7 @@ impl SslContext {
     pub fn protocol_version_min(&self) -> Result<SslProtocol> {
         unsafe {
             let mut version = 0;
-            cvt(SSLGetProtocolVersionMin(self.0, &mut version))?;
+            cvt(SSLGetProtocolVersionMin(&self.0, NonNull::from(&mut version)))?;
             Ok(SslProtocol(version))
         }
     }
@@ -696,24 +681,24 @@ impl SslContext {
     /// Sets the minimum protocol version allowed by the session.
     #[inline]
     pub fn set_protocol_version_min(&mut self, min_version: SslProtocol) -> Result<()> {
-        unsafe { cvt(SSLSetProtocolVersionMin(self.0, min_version.0)) }
+        unsafe { cvt(SSLSetProtocolVersionMin(&self.0, min_version.0)) }
     }
 
     /// Returns the set of protocols selected via ALPN if it succeeded.
     #[cfg(feature = "alpn")]
     pub fn alpn_protocols(&self) -> Result<Vec<String>> {
-        let mut array: CFArrayRef = ptr::null();
+        let mut array: &CFArray = ptr::null();
         unsafe {
             #[cfg(feature = "OSX_10_13")]
             {
-                cvt(SSLCopyALPNProtocols(self.0, &mut array))?;
+                cvt(SSLCopyALPNProtocols(&self.0, &mut array))?;
             }
 
             #[cfg(not(feature = "OSX_10_13"))]
             {
-                dlsym! { fn SSLCopyALPNProtocols(SSLContextRef, *mut CFArrayRef) -> OSStatus }
+                dlsym! { fn SSLCopyALPNProtocols(SSLContextRef, *mut &CFArray) -> OSStatus }
                 if let Some(f) = SSLCopyALPNProtocols.get() {
-                    cvt(f(self.0, &mut array))?;
+                    cvt(f(&self.0, &mut array))?;
                 } else {
                     return Err(Error::from_code(errSecUnimplemented));
                 }
@@ -745,13 +730,13 @@ impl SslContext {
 
         #[cfg(feature = "OSX_10_13")]
         {
-            unsafe { cvt(SSLSetALPNProtocols(self.0, protocols.as_concrete_TypeRef())) }
+            unsafe { cvt(SSLSetALPNProtocols(&self.0, protocols)) }
         }
         #[cfg(not(feature = "OSX_10_13"))]
         {
-            dlsym! { fn SSLSetALPNProtocols(SSLContextRef, CFArrayRef) -> OSStatus }
+            dlsym! { fn SSLSetALPNProtocols(SSLContextRef, &CFArray) -> OSStatus }
             if let Some(f) = SSLSetALPNProtocols.get() {
-                unsafe { cvt(f(self.0, protocols.as_concrete_TypeRef())) }
+                unsafe { cvt(f(&self.0, protocols)) }
             } else {
                 Err(Error::from_code(errSecUnimplemented))
             }
@@ -769,13 +754,13 @@ impl SslContext {
     pub fn set_session_tickets_enabled(&mut self, enabled: bool) -> Result<()> {
         #[cfg(feature = "OSX_10_13")]
         {
-            unsafe { cvt(SSLSetSessionTicketsEnabled(self.0, Boolean::from(enabled))) }
+            unsafe { cvt(SSLSetSessionTicketsEnabled(&self.0, Boolean::from(enabled))) }
         }
         #[cfg(not(feature = "OSX_10_13"))]
         {
             dlsym! { fn SSLSetSessionTicketsEnabled(SSLContextRef, Boolean) -> OSStatus }
             if let Some(f) = SSLSetSessionTicketsEnabled.get() {
-                unsafe { cvt(f(self.0, enabled as Boolean)) }
+                unsafe { cvt(f(&self.0, enabled as Boolean)) }
             } else {
                 Err(Error::from_code(errSecUnimplemented))
             }
@@ -788,7 +773,7 @@ impl SslContext {
     pub fn buffered_read_size(&self) -> Result<usize> {
         unsafe {
             let mut size = 0;
-            cvt(SSLGetBufferedReadSize(self.0, &mut size))?;
+            cvt(SSLGetBufferedReadSize(&self.0, &mut size))?;
             Ok(size)
         }
     }
@@ -796,21 +781,21 @@ impl SslContext {
     impl_options! {
         /// If enabled, the handshake process will pause and return instead of
         /// automatically validating a server's certificate.
-        const kSSLSessionOptionBreakOnServerAuth: break_on_server_auth & set_break_on_server_auth,
+        const BreakOnServerAuth: break_on_server_auth & set_break_on_server_auth,
         /// If enabled, the handshake process will pause and return after
         /// the server requests a certificate from the client.
-        const kSSLSessionOptionBreakOnCertRequested: break_on_cert_requested & set_break_on_cert_requested,
+        const BreakOnCertRequested: break_on_cert_requested & set_break_on_cert_requested,
         /// If enabled, the handshake process will pause and return instead of
         /// automatically validating a client's certificate.
-        const kSSLSessionOptionBreakOnClientAuth: break_on_client_auth & set_break_on_client_auth,
+        const BreakOnClientAuth: break_on_client_auth & set_break_on_client_auth,
         /// If enabled, TLS false start will be performed if an appropriate
         /// cipher suite is negotiated.
         ///
-        const kSSLSessionOptionFalseStart: false_start & set_false_start,
+        const FalseStart: false_start & set_false_start,
         /// If enabled, 1/n-1 record splitting will be enabled for TLS 1.0
         /// connections using block ciphers to mitigate the BEAST attack.
         ///
-        const kSSLSessionOptionSendOneByteRecord: send_one_byte_record & set_send_one_byte_record,
+        const SendOneByteRecord: send_one_byte_record & set_send_one_byte_record,
     }
 
     fn into_stream<S>(self, stream: S) -> Result<SslStream<S>>
@@ -818,7 +803,7 @@ impl SslContext {
         S: Read + Write,
     {
         unsafe {
-            let ret = SSLSetIOFuncs(self.0, read_func::<S>, write_func::<S>);
+            let ret = SSLSetIOFuncs(&self.0, read_func::<S>, write_func::<S>);
             if ret != errSecSuccess {
                 return Err(Error::from_code(ret));
             }
@@ -829,7 +814,7 @@ impl SslContext {
                 panic: None,
             };
             let stream = Box::into_raw(Box::new(stream));
-            let ret = SSLSetConnection(self.0, stream.cast());
+            let ret = SSLSetConnection(&self.0, stream.cast());
             if ret != errSecSuccess {
                 let _conn = Box::from_raw(stream);
                 return Err(Error::from_code(ret));
@@ -965,7 +950,7 @@ impl<S> Drop for SslStream<S> {
     fn drop(&mut self) {
         unsafe {
             let mut conn = ptr::null();
-            let ret = SSLGetConnection(self.ctx.0, &mut conn);
+            let ret = SSLGetConnection(&self.ctx.0, &mut conn);
             assert!(ret == errSecSuccess);
             let _ = Box::<Connection<S>>::from_raw(conn as *mut _);
         }
@@ -974,7 +959,7 @@ impl<S> Drop for SslStream<S> {
 
 impl<S> SslStream<S> {
     fn handshake(mut self) -> result::Result<Self, HandshakeError<S>> {
-        match unsafe { SSLHandshake(self.ctx.0) } {
+        match unsafe { SSLHandshake(&self.ctx.0) } {
             errSecSuccess => Ok(self),
             reason @ errSSLPeerAuthCompleted
             | reason @ errSSLClientCertRequested
@@ -1021,7 +1006,7 @@ impl<S> SslStream<S> {
     /// Shuts down the connection.
     pub fn close(&mut self) -> result::Result<(), io::Error> {
         unsafe {
-            let ret = SSLClose(self.ctx.0);
+            let ret = SSLClose(&self.ctx.0);
             if ret == errSecSuccess {
                 Ok(())
             } else {
@@ -1033,7 +1018,7 @@ impl<S> SslStream<S> {
     fn connection(&self) -> &Connection<S> {
         unsafe {
             let mut conn = ptr::null();
-            let ret = SSLGetConnection(self.ctx.0, &mut conn);
+            let ret = SSLGetConnection(&self.ctx.0, &mut conn);
             assert!(ret == errSecSuccess);
 
             &mut *(conn as *mut Connection<S>)
@@ -1043,7 +1028,7 @@ impl<S> SslStream<S> {
     fn connection_mut(&mut self) -> &mut Connection<S> {
         unsafe {
             let mut conn = ptr::null();
-            let ret = SSLGetConnection(self.ctx.0, &mut conn);
+            let ret = SSLGetConnection(&self.ctx.0, &mut conn);
             assert!(ret == errSecSuccess);
 
             &mut *(conn as *mut Connection<S>)
@@ -1093,7 +1078,7 @@ impl<S: Read + Write> Read for SslStream<S> {
 
         unsafe {
             let mut nread = 0;
-            let ret = SSLRead(self.ctx.0, buf.as_mut_ptr().cast(), to_read, &mut nread);
+            let ret = SSLRead(&self.ctx.0, NonNull::new(buf.as_mut_ptr().cast::<c_void>()).unwrap(), to_read, NonNull::from(&mut nread));
             // SSLRead can return an error at the same time it returns the last
             // chunk of data (!)
             if nread > 0 {
@@ -1119,7 +1104,7 @@ impl<S: Read + Write> Write for SslStream<S> {
         unsafe {
             let mut nwritten = 0;
             let ret = SSLWrite(
-                self.ctx.0,
+                &self.ctx.0,
                 buf.as_ptr().cast(),
                 buf.len(),
                 &mut nwritten,

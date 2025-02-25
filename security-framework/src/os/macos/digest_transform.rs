@@ -1,21 +1,15 @@
 //! Digest Transform support
 
-use core_foundation::base::{CFIndex, TCFType};
-use core_foundation::data::CFData;
-use core_foundation::error::CFError;
-use core_foundation::string::CFString;
-use core_foundation_sys::base::CFTypeRef;
-use core_foundation_sys::data::CFDataRef;
-use core_foundation_sys::string::CFStringRef;
-use security_framework_sys::digest_transform::*;
-use security_framework_sys::transform::kSecTransformInputAttributeName;
-use std::ptr;
+use objc2_core_foundation::{CFData, CFError, CFIndex, CFRetained, CFString, CFType};
+use objc2_security::*;
+use objc2_security::kSecTransformInputAttributeName;
+use std::ptr::{self, NonNull};
 
-use crate::os::macos::transform::SecTransform;
+use super::transform::SecTransform;
 
 #[derive(Debug, Copy, Clone)]
 /// A type of digest.
-pub struct DigestType(CFStringRef);
+pub struct DigestType(&'static CFString);
 
 #[allow(missing_docs)]
 impl DigestType {
@@ -68,8 +62,8 @@ impl DigestType {
     }
 
     #[inline(always)]
-    fn to_type(self) -> CFTypeRef {
-        self.0 as CFTypeRef
+    fn to_type(self) -> &'static CFType {
+        &self.0
     }
 }
 
@@ -129,32 +123,28 @@ impl Builder {
 
     /// Computes the digest of the data.
     // FIXME: deprecate and remove: don't expose CFData in Rust APIs.
-    pub fn execute(&self, data: &CFData) -> Result<CFData, CFError> {
+    pub fn execute(&self, data: &CFData) -> Result<CFRetained<CFData>, CFRetained<CFError>> {
         unsafe {
-            let digest_type = match self.digest_type {
-                Some(ref digest_type) => digest_type.to_type(),
-                None => ptr::null(),
-            };
+            let digest_type = self.digest_type.map(|x| x.to_type());
 
             let digest_length = self.digest_length.unwrap_or(0);
 
             let mut error = ptr::null_mut();
+            #[allow(deprecated)]
             let transform = SecDigestTransformCreate(digest_type, digest_length, &mut error);
             if transform.is_null() {
-                return Err(CFError::wrap_under_create_rule(error));
+                return Err(CFRetained::from_raw(NonNull::new(error).unwrap()));
             }
-            let mut transform = SecTransform::wrap_under_create_rule(transform);
+            let transform = SecTransform(transform);
 
             if let Some(ref hmac_key) = self.hmac_key {
-                let key = CFString::wrap_under_get_rule(kSecDigestHMACKeyAttribute);
-                transform.set_attribute(&key, hmac_key)?;
+                transform.set_attribute(&kSecDigestHMACKeyAttribute, hmac_key)?;
             }
 
-            let key = CFString::wrap_under_get_rule(kSecTransformInputAttributeName);
-            transform.set_attribute(&key, data)?;
+            transform.set_attribute(kSecTransformInputAttributeName, data)?;
 
             let result = transform.execute()?;
-            Ok(CFData::wrap_under_get_rule(result.as_CFTypeRef() as CFDataRef))
+            Ok(result.downcast().unwrap())
         }
     }
 }
@@ -167,7 +157,7 @@ mod test {
     fn md5() {
         let data = CFData::from_buffer("The quick brown fox jumps over the lazy dog".as_bytes());
         let hash = Builder::new().type_(DigestType::md5()).execute(&data).unwrap();
-        assert_eq!(hex::encode(hash.bytes()), "9e107d9d372bb6826bd81d3542a419d6");
+        assert_eq!(hex::encode(hash.to_vec()), "9e107d9d372bb6826bd81d3542a419d6");
     }
 
     #[test]
@@ -175,6 +165,6 @@ mod test {
         let data = CFData::from_buffer("The quick brown fox jumps over the lazy dog".as_bytes());
         let key = CFData::from_buffer(b"key");
         let hash = Builder::new().type_(DigestType::hmac_sha1()).hmac_key(key).execute(&data).unwrap();
-        assert_eq!(hex::encode(hash.bytes()), "de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9");
+        assert_eq!(hex::encode(hash.to_vec()), "de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9");
     }
 }

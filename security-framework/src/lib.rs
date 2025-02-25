@@ -6,10 +6,9 @@
 #![allow(clippy::manual_non_exhaustive)] // MSRV
 #![allow(clippy::bad_bit_mask)] // bitflags
 
-use core_foundation_sys::base::OSStatus;
-use security_framework_sys::base::errSecSuccess;
+use objc2_security::errSecSuccess;
 
-use crate::base::{Error, Result};
+use crate::base::{Error, Result, OSStatus};
 #[cfg(target_os = "macos")]
 use crate::os::macos::access::SecAccess;
 #[cfg(target_os = "macos")]
@@ -21,6 +20,35 @@ macro_rules! p {
         match $e {
             Ok(s) => s,
             Err(e) => panic!("{:?}", e),
+        }
+    };
+}
+
+macro_rules! declare_TCFType {
+    (
+        $(#[$doc:meta])*
+        $ty:ident, $raw:ident
+    ) => {
+        $(#[$doc])*
+        #[repr(transparent)]
+        #[derive(Clone, PartialEq, Eq, Hash)]
+        pub struct $ty(pub(crate) objc2_core_foundation::CFRetained<objc2_security::$raw>);
+
+        impl $ty {
+            #[inline]
+            pub fn from_raw(raw: &objc2_security::$raw) -> Self {
+                Self(objc2_core_foundation::Type::retain(raw))
+            }
+
+            #[inline]
+            pub fn as_raw(&self) -> &objc2_security::$raw {
+                &self.0
+            }
+
+            #[inline]
+            pub unsafe fn wrap_under_create_rule(raw: *mut objc2_security::$raw) -> Self {
+                Self(objc2_core_foundation::CFRetained::from_raw(core::ptr::NonNull::new(raw).unwrap()))
+            }
         }
     };
 }
@@ -60,11 +88,6 @@ trait Pkcs12ImportOptionsInternals {
 #[cfg(target_os = "macos")]
 trait ItemSearchOptionsInternals {
     fn keychains(&mut self, keychains: &[SecKeychain]) -> &mut Self;
-}
-
-trait AsInner {
-    type Inner;
-    fn as_inner(&self) -> Self::Inner;
 }
 
 #[inline(always)]

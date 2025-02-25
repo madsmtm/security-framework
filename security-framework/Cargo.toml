@@ -18,10 +18,9 @@ edition = "2021"
 rust-version = "1.70"
 
 [dependencies]
-security-framework-sys = { version = "2.14", default-features = false, path = "../security-framework-sys" }
 bitflags = "2.6"
-core-foundation = "0.10"
-core-foundation-sys = "0.8.6"
+objc2-core-foundation = "0.3"
+objc2-security = "0.3"
 libc = "0.2.139"
 log = { version = "0.4.20", optional = true }
 
@@ -40,15 +39,10 @@ job-bless = []
 # Enables `GenerateKeyOptions::set_synchronizable`. Warning: not backwards-compatible!
 sync-keychain = ["OSX_10_13"]
 
-OSX_10_12 = ["security-framework-sys/OSX_10_12"]
-OSX_10_13 = [
-    "OSX_10_12",
-    "security-framework-sys/OSX_10_13",
-    "alpn",
-    "session-tickets",
-]
-OSX_10_14 = ["OSX_10_13", "security-framework-sys/OSX_10_14"]
-OSX_10_15 = ["OSX_10_14", "security-framework-sys/OSX_10_15"]
+OSX_10_12 = []
+OSX_10_13 = ["OSX_10_12", "alpn", "session-tickets"]
+OSX_10_14 = ["OSX_10_13"]
+OSX_10_15 = ["OSX_10_14"]
 
 nightly = [] # not used, doesn't do anything, only for back compat
 

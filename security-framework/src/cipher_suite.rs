@@ -1,6 +1,6 @@
 //! Cipher Suites supported by Secure Transport
 
-use security_framework_sys::cipher_suite::*;
+use objc2_security::*;
 
 macro_rules! make_suites {
     ($($suite:ident),+) => {

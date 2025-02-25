@@ -1,8 +1,7 @@
 //! OSX specific extensions to identity functionality.
-use core_foundation::array::CFArray;
-use core_foundation::base::TCFType;
-use security_framework_sys::identity::SecIdentityCreateWithCertificate;
-use std::ptr;
+use objc2_core_foundation::{CFArray, CFRetained};
+use objc2_security::SecIdentityCreateWithCertificate;
+use std::ptr::{self, NonNull};
 
 use crate::base::Result;
 use crate::certificate::SecCertificate;
@@ -26,13 +25,14 @@ pub trait SecIdentityExt {
 
 impl SecIdentityExt for SecIdentity {
     fn with_certificate(keychains: &[SecKeychain], certificate: &SecCertificate) -> Result<Self> {
-        let keychains = CFArray::from_CFTypes(keychains);
+        let keychains = unsafe { core::mem::transmute::<&[SecKeychain], &[CFRetained<objc2_security::SecKeychain>]>(keychains) };
+        let keychains = CFArray::from_retained_objects(keychains);
         unsafe {
             let mut identity = ptr::null_mut();
             cvt(SecIdentityCreateWithCertificate(
-                if !keychains.is_empty() { keychains.as_CFTypeRef() } else { ptr::null() },
-                certificate.as_concrete_TypeRef(),
-                &mut identity,
+                if !keychains.is_empty() { Some(&keychains) } else { None },
+                certificate.as_raw(),
+                NonNull::from(&mut identity),
             ))?;
             Ok(Self::wrap_under_create_rule(identity))
         }

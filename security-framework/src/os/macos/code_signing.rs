@@ -1,28 +1,22 @@
 //! Code signing services.
 
-use core_foundation::{declare_TCFType, impl_TCFType};
+
+use std::ptr::NonNull;
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::str::FromStr;
-use core_foundation::base::{TCFType, TCFTypeRef, ToVoid};
-use core_foundation::data::CFDataRef;
-use core_foundation::dictionary::CFMutableDictionary;
-use core_foundation::number::CFNumber;
-use core_foundation::string::{CFString, CFStringRef};
-use core_foundation::url::CFURL;
+use objc2_core_foundation::{CFData, CFMutableDictionary, CFNumber, CFRetained, CFString, CFType, CFURL};
 use libc::pid_t;
-use security_framework_sys::code_signing::{
+use objc2_security::{
     kSecCSBasicValidateOnly, kSecCSCheckAllArchitectures, kSecCSCheckGatekeeperArchitectures,
-    kSecCSCheckNestedCode, kSecCSCheckTrustedAnchors, kSecCSConsiderExpiration,
-    kSecCSDoNotValidateExecutable, kSecCSDoNotValidateResources, kSecCSEnforceRevocationChecks,
-    kSecCSFullReport, kSecCSNoNetworkAccess, kSecCSQuickCheck, kSecCSReportProgress,
+    kSecCSCheckNestedCode, SecCSFlags, kSecCSDoNotValidateExecutable, kSecCSDoNotValidateResources,
+    kSecCSFullReport,
     kSecCSRestrictSidebandData, kSecCSRestrictSymlinks, kSecCSRestrictToAppLike,
     kSecCSSingleThreaded, kSecCSStrictValidate, kSecCSUseSoftwareSigningCert, kSecCSValidatePEH,
     kSecGuestAttributeAudit, kSecGuestAttributePid, SecCodeCheckValidity,
-    SecCodeCopyGuestWithAttributes, SecCodeCopyPath, SecCodeCopySelf, SecCodeGetTypeID, SecCodeRef,
-    SecRequirementCreateWithString, SecRequirementGetTypeID, SecRequirementRef,
-    SecStaticCodeCheckValidity, SecStaticCodeCreateWithPath, SecStaticCodeGetTypeID,
-    SecStaticCodeRef,
+    SecCodeCopyGuestWithAttributes, SecCodeCopyPath, SecCodeCopySelf,
+    SecRequirementCreateWithString,
+    SecStaticCodeCheckValidity, SecStaticCodeCreateWithPath,
 };
 
 use crate::{cvt, Result};
@@ -83,22 +77,22 @@ bitflags::bitflags! {
         const SINGLE_THREADED = kSecCSSingleThreaded;
 
         /// Apple have not documented this flag.
-        const QUICK_CHECK = kSecCSQuickCheck;
+        const QUICK_CHECK = SecCSFlags::QuickCheck.0;
 
         /// Apple have not documented this flag.
-        const CHECK_TRUSTED_ANCHORS = kSecCSCheckTrustedAnchors;
+        const CHECK_TRUSTED_ANCHORS = SecCSFlags::CheckTrustedAnchors.0;
 
         /// Apple have not documented this flag.
-        const REPORT_PROGRESS = kSecCSReportProgress;
+        const REPORT_PROGRESS = SecCSFlags::ReportProgress.0;
 
         /// Apple have not documented this flag.
-        const NO_NETWORK_ACCESS = kSecCSNoNetworkAccess;
+        const NO_NETWORK_ACCESS = SecCSFlags::NoNetworkAccess.0;
 
         /// Apple have not documented this flag.
-        const ENFORCE_REVOCATION_CHECKS = kSecCSEnforceRevocationChecks;
+        const ENFORCE_REVOCATION_CHECKS = SecCSFlags::EnforceRevocationChecks.0;
 
         /// Apple have not documented this flag.
-        const CONSIDER_EXPIRATION = kSecCSConsiderExpiration;
+        const CONSIDER_EXPIRATION = SecCSFlags::ConsiderExpiration.0;
     }
 }
 
@@ -112,7 +106,7 @@ impl Default for Flags {
 /// A helper to create guest attributes, which are normally passed as a
 /// `CFDictionary` with varying types.
 pub struct GuestAttributes {
-    inner: CFMutableDictionary,
+    inner: CFRetained<CFMutableDictionary<CFString, CFType>>,
 }
 
 impl GuestAttributes {
@@ -135,21 +129,19 @@ impl GuestAttributes {
     }
 
     /// The guest's audit token.
-    pub fn set_audit_token(&mut self, token: CFDataRef) {
-        let key = unsafe { CFString::wrap_under_get_rule(kSecGuestAttributeAudit) };
-        self.inner.add(&key.as_CFTypeRef(), &token.to_void());
+    pub fn set_audit_token(&mut self, token: &CFData) {
+        self.inner.add(unsafe { kSecGuestAttributeAudit }, token.as_ref());
     }
 
     /// The guest's pid.
     pub fn set_pid(&mut self, pid: pid_t) {
-        let key = unsafe { CFString::wrap_under_get_rule(kSecGuestAttributePid) };
-        let pid = CFNumber::from(pid);
-        self.inner.add(&key.as_CFTypeRef(), &pid.as_CFTypeRef());
+        let pid = CFNumber::new_i32(pid);
+        self.inner.add(unsafe { kSecGuestAttributePid }, pid.as_ref());
     }
 
     /// Support for arbirtary guest attributes.
-    pub fn set_other<V: ToVoid<V>>(&mut self, key: CFStringRef, value: V) {
-        self.inner.add(&key.as_void_ptr(), &value.to_void());
+    pub unsafe fn set_other(&mut self, key: &CFString, value: &CFType) {
+        self.inner.add(key, value);
     }
 }
 
@@ -161,9 +153,8 @@ impl Default for GuestAttributes {
 
 declare_TCFType! {
     /// A code object representing signed code running on the system.
-    SecRequirement, SecRequirementRef
+    SecRequirement, SecRequirement
 }
-impl_TCFType!(SecRequirement, SecRequirementRef, SecRequirementGetTypeID);
 
 impl FromStr for SecRequirement {
     type Err = crate::base::Error;
@@ -174,21 +165,20 @@ impl FromStr for SecRequirement {
 
         unsafe {
             cvt(SecRequirementCreateWithString(
-                text.as_concrete_TypeRef(),
-                0,
-                requirement.as_mut_ptr(),
+                &text,
+                SecCSFlags::DefaultFlags,
+                NonNull::new(requirement.as_mut_ptr()).unwrap(),
             ))?;
 
-            Ok(Self::wrap_under_create_rule(requirement.assume_init()))
+            Ok(Self(CFRetained::from_raw(NonNull::new(requirement.assume_init()).unwrap())))
         }
     }
 }
 
 declare_TCFType! {
     /// A code object representing signed code running on the system.
-    SecCode, SecCodeRef
+    SecCode, SecCode
 }
-impl_TCFType!(SecCode, SecCodeRef, SecCodeGetTypeID);
 
 impl Debug for SecCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -202,8 +192,8 @@ impl SecCode {
         let mut code = MaybeUninit::uninit();
 
         unsafe {
-            cvt(SecCodeCopySelf(flags.bits(), code.as_mut_ptr()))?;
-            Ok(Self::wrap_under_create_rule(code.assume_init()))
+            cvt(SecCodeCopySelf(SecCSFlags(flags.bits()), NonNull::new(code.as_mut_ptr()).unwrap()))?;
+            Ok(Self(CFRetained::from_raw(NonNull::new(code.assume_init()).unwrap())))
         }
     }
 
@@ -211,9 +201,9 @@ impl SecCode {
     pub fn check_validity(&self, flags: Flags, requirement: &SecRequirement) -> Result<()> {
         unsafe {
             cvt(SecCodeCheckValidity(
-                self.as_concrete_TypeRef(),
-                flags.bits(),
-                requirement.as_concrete_TypeRef(),
+                &self.0,
+                SecCSFlags(flags.bits()),
+                Some(requirement.as_raw()),
             ))
         }
     }
@@ -230,47 +220,42 @@ impl SecCode {
     ) -> Result<Self> {
         let mut code = MaybeUninit::uninit();
 
-        let host = match host {
-            Some(host) => host.as_concrete_TypeRef(),
-            None => std::ptr::null_mut(),
-        };
-
         unsafe {
             cvt(SecCodeCopyGuestWithAttributes(
-                host,
-                attrs.inner.as_concrete_TypeRef(),
-                flags.bits(),
-                code.as_mut_ptr(),
+                host.as_ref().map(|host| host.as_raw()),
+                Some(attrs.inner.as_opaque()),
+                SecCSFlags(flags.bits()),
+                NonNull::new(code.as_mut_ptr()).unwrap(),
             ))?;
 
-            Ok(Self::wrap_under_create_rule(code.assume_init()))
+            Ok(Self(CFRetained::from_raw(NonNull::new(code.assume_init()).unwrap())))
         }
     }
 
     /// Retrieves the location on disk of signed code, given a code or static
     /// code object.
     // FIXME: Don't expose CFURL in Rust APIs.
-    pub fn path(&self, flags: Flags) -> Result<CFURL> {
+    pub fn path(&self, flags: Flags) -> Result<CFRetained<CFURL>> {
         let mut url = MaybeUninit::uninit();
 
         // The docs say we can pass a SecCodeRef instead of a SecStaticCodeRef.
         unsafe {
+            let code = core::mem::transmute::<&objc2_security::SecCode, &objc2_security::SecStaticCode>(&*self.0);
             cvt(SecCodeCopyPath(
-                self.as_CFTypeRef() as _,
-                flags.bits(),
-                url.as_mut_ptr(),
+                code,
+                SecCSFlags(flags.bits()),
+                NonNull::new(url.as_mut_ptr()).unwrap(),
             ))?;
 
-            Ok(CFURL::wrap_under_create_rule(url.assume_init()))
+            Ok(CFRetained::from_raw(NonNull::new(url.assume_init().cast_mut()).unwrap()))
         }
     }
 }
 
 declare_TCFType! {
     /// A static code object representing signed code on disk.
-    SecStaticCode, SecStaticCodeRef
+    SecStaticCode, SecStaticCode
 }
-impl_TCFType!(SecStaticCode, SecStaticCodeRef, SecStaticCodeGetTypeID);
 
 impl SecStaticCode {
     /// Creates a static code object representing the code at a specified file
@@ -280,30 +265,29 @@ impl SecStaticCode {
 
         unsafe {
             cvt(SecStaticCodeCreateWithPath(
-                path.as_concrete_TypeRef(),
-                flags.bits(),
-                code.as_mut_ptr(),
+                path,
+                SecCSFlags(flags.bits()),
+                NonNull::new(code.as_mut_ptr()).unwrap(),
             ))?;
 
-            Ok(Self::wrap_under_create_rule(code.assume_init()))
+            Ok(Self(CFRetained::from_raw(NonNull::new(code.assume_init().cast_mut()).unwrap())))
         }
     }
 
     /// Retrieves the location on disk of signed code, given a code or static
     /// code object.
     // FIXME: Don't expose CFURL in Rust APIs.
-    pub fn path(&self, flags: Flags) -> Result<CFURL> {
+    pub fn path(&self, flags: Flags) -> Result<CFRetained<CFURL>> {
         let mut url = MaybeUninit::uninit();
 
-        // The docs say we can pass a SecCodeRef instead of a SecStaticCodeRef.
         unsafe {
             cvt(SecCodeCopyPath(
-                self.as_concrete_TypeRef(),
-                flags.bits(),
-                url.as_mut_ptr(),
+                &self.0,
+                SecCSFlags(flags.bits()),
+                NonNull::new(url.as_mut_ptr()).unwrap(),
             ))?;
 
-            Ok(CFURL::wrap_under_create_rule(url.assume_init()))
+            Ok(CFRetained::from_raw(NonNull::new(url.assume_init().cast_mut()).unwrap()))
         }
     }
 
@@ -311,9 +295,9 @@ impl SecStaticCode {
     pub fn check_validity(&self, flags: Flags, requirement: &SecRequirement) -> Result<()> {
         unsafe {
             cvt(SecStaticCodeCheckValidity(
-                self.as_concrete_TypeRef(),
-                flags.bits(),
-                requirement.as_concrete_TypeRef(),
+                &self.0,
+                SecCSFlags(flags.bits()),
+                Some(requirement.as_raw()),
             ))
         }
     }
@@ -322,7 +306,7 @@ impl SecStaticCode {
 #[cfg(test)]
 mod test {
     use super::*;
-    use core_foundation::data::CFData;
+    use objc2_core_foundation::CFData;
     use libc::{c_uint, c_void, KERN_SUCCESS};
 
     #[test]
@@ -452,7 +436,7 @@ mod test {
         let token_data = CFData::from_buffer(&token);
 
         let mut attrs = GuestAttributes::new();
-        attrs.set_audit_token(token_data.as_concrete_TypeRef());
+        attrs.set_audit_token(&token_data);
 
         assert_eq!(
             SecCode::copy_guest_with_attribues(None, &attrs, Flags::NONE)
@@ -471,7 +455,7 @@ mod test {
         let token_data = CFData::from_buffer(&token);
 
         let mut attrs = GuestAttributes::new();
-        attrs.set_audit_token(token_data.as_concrete_TypeRef());
+        attrs.set_audit_token(&token_data);
 
         assert_eq!(
             SecCode::copy_guest_with_attribues(None, &attrs, Flags::NONE).unwrap_err().code(),

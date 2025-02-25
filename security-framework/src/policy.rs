@@ -1,9 +1,7 @@
 //! Security Policies support.
-use core_foundation::{declare_TCFType, impl_TCFType};
-use core_foundation::base::{CFOptionFlags, TCFType};
-use core_foundation::string::CFString;
-use security_framework_sys::base::{errSecParam, SecPolicyRef};
-use security_framework_sys::policy::*;
+
+use objc2_core_foundation::{CFOptionFlags, CFString};
+use objc2_security::*;
 use std::fmt;
 use std::ptr;
 
@@ -12,9 +10,8 @@ use crate::Error;
 
 declare_TCFType! {
     /// A type representing a certificate validation policy.
-    SecPolicy, SecPolicyRef
+    SecPolicy, SecPolicy
 }
-impl_TCFType!(SecPolicy, SecPolicyRef, SecPolicyGetTypeID);
 
 unsafe impl Sync for SecPolicy {}
 unsafe impl Send for SecPolicy {}
@@ -54,7 +51,7 @@ impl SecPolicy {
         let hostname = hostname.map(CFString::new);
         let hostname = hostname
             .as_ref()
-            .map(|s| s.as_concrete_TypeRef())
+            .map(|s| s)
             .unwrap_or(ptr::null_mut());
         let is_server = protocol_side == SslProtocolSide::SERVER;
         unsafe {

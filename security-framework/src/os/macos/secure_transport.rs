@@ -1,15 +1,14 @@
 //! OSX specific extensions to Secure Transport functionality.
 
-use core_foundation::array::CFArray;
-use core_foundation::base::TCFType;
-use security_framework_sys::secure_transport::*;
+use objc2_core_foundation::CFArray;
+use objc2_security::*;
 use std::ptr;
 use std::slice;
 
-use crate::base::Result;
+use crate::base::{Boolean, Result};
 use crate::certificate::SecCertificate;
 use crate::secure_transport::{MidHandshakeSslStream, SslContext};
-use crate::{cvt, AsInner};
+use crate::cvt;
 
 /// An extension trait adding OSX specific functionality to the `SslContext`
 /// type.
@@ -81,9 +80,7 @@ macro_rules! impl_options {
             #[inline]
             fn $set(&mut self, value: bool) -> Result<()> {
                 unsafe {
-                    cvt(SSLSetSessionOption(self.as_inner(),
-                                            $opt,
-                                            value as ::core_foundation::base::Boolean))
+                    cvt(SSLSetSessionOption(self.as_inner(), SSLSessionOption::$opt, value as Boolean))
                 }
             }
 
@@ -92,13 +89,14 @@ macro_rules! impl_options {
             #[inline]
             fn $get(&self) -> Result<bool> {
                 let mut value = 0;
-                unsafe { cvt(SSLGetSessionOption(self.as_inner(), $opt, &mut value))?; }
+                unsafe { cvt(SSLGetSessionOption(self.as_inner(), SSLSessionOption::$opt, &mut value))?; }
                 Ok(value != 0)
             }
         )*
     }
 }
 
+#[allow(deprecated)]
 impl SslContextExt for SslContext {
     fn diffie_hellman_params(&self) -> Result<Option<&[u8]>> {
         unsafe {
@@ -151,7 +149,7 @@ impl SslContextExt for SslContext {
             let certs = CFArray::from_CFTypes(certs);
             cvt(SSLSetCertificateAuthorities(
                 self.as_inner(),
-                certs.as_CFTypeRef(),
+                certs.as_CFType(),
                 1,
             ))
         }
@@ -162,16 +160,16 @@ impl SslContextExt for SslContext {
             let certs = CFArray::from_CFTypes(certs);
             cvt(SSLSetCertificateAuthorities(
                 self.as_inner(),
-                certs.as_CFTypeRef(),
+                certs.as_CFType(),
                 0,
             ))
         }
     }
 
     impl_options! {
-        const kSSLSessionOptionAllowServerIdentityChange: allow_server_identity_change & set_allow_server_identity_change,
-        const kSSLSessionOptionFallback: fallback & set_fallback,
-        const kSSLSessionOptionBreakOnClientHello: break_on_client_hello & set_break_on_client_hello,
+        const AllowServerIdentityChange: allow_server_identity_change & set_allow_server_identity_change,
+        const Fallback: fallback & set_fallback,
+        const BreakOnClientHello: break_on_client_hello & set_break_on_client_hello,
     }
 }
 

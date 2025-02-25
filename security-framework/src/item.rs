@@ -1,17 +1,10 @@
 //! Support to search for items in a keychain.
 
-use core_foundation::array::CFArray;
-use core_foundation::base::{CFType, TCFType, ToVoid};
-use core_foundation::boolean::CFBoolean;
-use core_foundation::data::CFData;
-use core_foundation::date::CFDate;
-use core_foundation::dictionary::{CFDictionary, CFMutableDictionary};
-use core_foundation::number::CFNumber;
-use core_foundation::string::CFString;
-use core_foundation_sys::base::{CFCopyDescription, CFGetTypeID, CFRelease, CFTypeRef};
-use core_foundation_sys::string::CFStringRef;
-use security_framework_sys::item::*;
-use security_framework_sys::keychain_item::{
+use objc2_core_foundation::{
+    CFArray, CFBoolean, CFCopyDescription, CFData, CFDate, CFDictionary, CFMutableDictionary, CFNumber, CFRetained, CFString, CFType, Type
+};
+use objc2_security::*;
+use objc2_security::{
     SecItemAdd, SecItemCopyMatching, SecItemDelete, SecItemUpdate,
 };
 use std::collections::HashMap;
@@ -28,7 +21,7 @@ use crate::os::macos::keychain::SecKeychain;
 
 /// Specifies the type of items to search for.
 #[derive(Debug, Copy, Clone)]
-pub struct ItemClass(CFStringRef);
+pub struct ItemClass(&'static CFString);
 
 impl ItemClass {
     /// Look for `SecKeychainItem`s corresponding to generic passwords.
@@ -69,7 +62,7 @@ impl ItemClass {
 
 /// Specifies the type of keys to search for.
 #[derive(Debug, Copy, Clone)]
-pub struct KeyClass(CFStringRef);
+pub struct KeyClass(&'static CFString);
 
 impl KeyClass {
     /// `kSecAttrKeyClassPublic`
@@ -106,10 +99,10 @@ pub enum Limit {
 
 impl Limit {
     #[inline]
-    fn to_value(self) -> CFType {
+    fn to_value(self) -> CFRetained<CFType> {
         match self {
-            Self::All => unsafe { CFString::wrap_under_get_rule(kSecMatchLimitAll).into_CFType() },
-            Self::Max(l) => CFNumber::from(l).into_CFType(),
+            Self::All => unsafe { kSecMatchLimitAll.retain().into() },
+            Self::Max(l) => CFNumber::new_i64(l).into(),
         }
     }
 }
@@ -125,9 +118,9 @@ impl From<i64> for Limit {
 #[derive(Default)]
 pub struct ItemSearchOptions {
     #[cfg(target_os = "macos")]
-    keychains: Option<CFArray<SecKeychain>>,
+    keychains: Option<CFRetained<CFArray<SecKeychain>>>,
     #[cfg(not(target_os = "macos"))]
-    keychains: Option<CFArray<CFType>>,
+    keychains: Option<CFRetained<CFArray<CFType>>>,
     case_insensitive: Option<bool>,
     class: Option<ItemClass>,
     key_class: Option<KeyClass>,
@@ -136,16 +129,16 @@ pub struct ItemSearchOptions {
     load_data: bool,
     limit: Option<Limit>,
     trusted_only: Option<bool>,
-    label: Option<CFString>,
-    service: Option<CFString>,
-    subject: Option<CFString>,
-    account: Option<CFString>,
-    access_group: Option<CFString>,
-    pub_key_hash: Option<CFData>,
-    serial_number: Option<CFData>,
-    app_label: Option<CFData>,
+    label: Option<CFRetained<CFString>>,
+    service: Option<CFRetained<CFString>>,
+    subject: Option<CFRetained<CFString>>,
+    account: Option<CFRetained<CFString>>,
+    access_group: Option<CFRetained<CFString>>,
+    pub_key_hash: Option<CFRetained<CFData>>,
+    serial_number: Option<CFRetained<CFData>>,
+    app_label: Option<CFRetained<CFData>>,
     #[cfg(any(feature = "OSX_10_13", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
-    authentication_context: Option<CFType>,
+    authentication_context: Option<CFRetained<CFType>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -312,7 +305,7 @@ impl ItemSearchOptions {
     /// Populates a `CFDictionary` to be passed to `update_item` or `delete_item`.
     // CFDictionary should not be exposed in public Rust APIs.
     #[inline]
-    fn to_dictionary(&self) -> CFDictionary {
+    fn to_dictionary(&self) -> CFRetained<CFDictionary> {
         unsafe {
             let mut params = CFMutableDictionary::from_CFType_pairs(&[]);
 
@@ -418,7 +411,7 @@ impl ItemSearchOptions {
             let params = self.to_dictionary();
 
             let mut ret = ptr::null();
-            cvt(SecItemCopyMatching(params.as_concrete_TypeRef(), &mut ret))?;
+            cvt(SecItemCopyMatching(params, &mut ret))?;
             if ret.is_null() {
                 //  SecItemCopyMatching returns NULL if no load_* was specified,
                 //  causing a segfault.
@@ -431,7 +424,7 @@ impl ItemSearchOptions {
             if type_id == CFArray::<CFType>::type_id() {
                 let array: CFArray<CFType> = CFArray::wrap_under_create_rule(ret as *mut _);
                 for item in array.iter() {
-                    items.push(get_item(item.as_CFTypeRef()));
+                    items.push(get_item(item.as_CFType()));
                 }
             } else {
                 items.push(get_item(ret));
@@ -449,42 +442,37 @@ impl ItemSearchOptions {
     /// Translates to `SecItemDelete`.
     #[inline]
     pub fn delete(&self) -> Result<()> {
-        cvt(unsafe { SecItemDelete(self.to_dictionary().as_concrete_TypeRef()) })
+        cvt(unsafe { SecItemDelete(self.to_dictionary()) })
     }
 }
 
-unsafe fn get_item(item: CFTypeRef) -> SearchResult {
-    let type_id = CFGetTypeID(item);
-
-    if type_id == CFData::type_id() {
-        let data = CFData::wrap_under_get_rule(item as *mut _);
+unsafe fn get_item(item: &CFType) -> SearchResult {
+    if let Some(data) = item.downcast_ref::<CFData>() {
         let mut buf = Vec::new();
         buf.extend_from_slice(data.bytes());
         return SearchResult::Data(buf);
     }
 
-    if type_id == CFDictionary::<*const u8, *const u8>::type_id() {
-        return SearchResult::Dict(CFDictionary::wrap_under_get_rule(item as *mut _));
+    if let Some(dict) = item.downcast_ref::<CFDictionary>() {
+        return SearchResult::Dict(dict.retain());
     }
 
     #[cfg(target_os = "macos")]
     {
         use crate::os::macos::keychain_item::SecKeychainItem;
-        if type_id == SecKeychainItem::type_id() {
-            return SearchResult::Ref(Reference::KeychainItem(
-                SecKeychainItem::wrap_under_get_rule(item as *mut _),
-            ));
+        if let Some(item) = item.downcast_ref::<SecKeychainItem>() {
+            return SearchResult::Ref(Reference::KeychainItem(item.retain()));
         }
     }
 
-    let reference = if type_id == SecCertificate::type_id() {
-        Reference::Certificate(SecCertificate::wrap_under_get_rule(item as *mut _))
-    } else if type_id == SecKey::type_id() {
-        Reference::Key(SecKey::wrap_under_get_rule(item as *mut _))
-    } else if type_id == SecIdentity::type_id() {
-        Reference::Identity(SecIdentity::wrap_under_get_rule(item as *mut _))
+    let reference = if let Some(item) = item.downcast_ref::<SecCertificate>() {
+        Reference::Certificate(item.retain())
+    } else if let Some(item) = item.downcast_ref::<SecKey>() {
+        Reference::Key(item.retain())
+    } else if let Some(item) = item.downcast_ref::<SecIdentity>() {
+        Reference::Identity(item.retain())
     } else {
-        panic!("Got bad type from SecItemCopyMatching: {type_id}");
+        panic!("Got bad type from SecItemCopyMatching: {item:?}");
     };
 
     SearchResult::Ref(reference)
@@ -517,7 +505,7 @@ pub enum SearchResult {
     /// A reference to the Security Framework object, if asked for.
     Ref(Reference),
     /// A dictionary of data about the Security Framework object, if asked for.
-    Dict(CFDictionary),
+    Dict(CFRetained<CFDictionary>),
     /// The Security Framework object as bytes, if asked for.
     Data(Vec<u8>),
     /// An unknown representation of the Security Framework object.
@@ -559,25 +547,18 @@ impl SearchResult {
             Self::Dict(ref d) => unsafe {
                 let mut retmap = HashMap::new();
                 let (keys, values) = d.get_keys_and_values();
-                for (k, v) in keys.iter().zip(values.iter()) {
-                    let keycfstr = CFString::wrap_under_get_rule((*k).cast());
-                    let val: String = match CFGetTypeID(*v) {
-                        cfstring if cfstring == CFString::type_id() => {
-                            format!("{}", CFString::wrap_under_get_rule((*v).cast()))
-                        },
-                        cfdata if cfdata == CFData::type_id() => {
-                            let buf = CFData::wrap_under_get_rule((*v).cast());
-                            let mut vec = Vec::new();
-                            vec.extend_from_slice(buf.bytes());
-                            format!("{}", String::from_utf8_lossy(&vec))
-                        }
-                        cfdate if cfdate == CFDate::type_id() => format!(
-                            "{}",
-                            CFString::wrap_under_create_rule(CFCopyDescription(*v))
-                        ),
-                        _ => String::from("unknown"),
+                for (key, val) in keys.iter().zip(values.iter()) {
+                    let key = key.downcast::<CFString>().unwrap();
+                    let val: String = if let Some(cfstring) = val.downcast_ref::<CFString>() {
+                        cfstring.to_string()
+                    } else if let Some(cfdata) = val.downcast_ref::<CFData>() {
+                        String::from_utf8_lossy(&cfdata.to_vec())
+                    } else if let Some(cfdate) = val.downcast_ref::<CFDate>() {
+                        CFCopyDescription(Some(cfdate)).unwrap().to_string()
+                    } else {
+                        String::from("unknown")
                     };
-                    retmap.insert(format!("{keycfstr}"), val);
+                    retmap.insert(key.to_string(), val);
                 }
                 Some(retmap)
             },
@@ -594,17 +575,17 @@ pub struct ItemAddOptions {
     /// The value (by ref or data) of the item to add, required.
     pub value: ItemAddValue,
     /// Optional kSecAttrAccount attribute.
-    pub account_name: Option<CFString>,
+    pub account_name: Option<CFRetained<CFString>>,
     /// Optional kSecAttrAccessGroup attribute.
-    pub access_group: Option<CFString>,
+    pub access_group: Option<CFRetained<CFString>>,
     /// Optional kSecAttrComment attribute.
-    pub comment: Option<CFString>,
+    pub comment: Option<CFRetained<CFString>>,
     /// Optional kSecAttrDescription attribute.
-    pub description: Option<CFString>,
+    pub description: Option<CFRetained<CFString>>,
     /// Optional kSecAttrLabel attribute.
-    pub label: Option<CFString>,
+    pub label: Option<CFRetained<CFString>>,
     /// Optional kSecAttrService attribute.
-    pub service: Option<CFString>,
+    pub service: Option<CFRetained<CFString>>,
     /// Optional keychain location.
     pub location: Option<Location>,
 }
@@ -678,7 +659,7 @@ impl ItemAddOptions {
     /// Populates a `CFDictionary` to be passed to `add_item`.
     #[deprecated(since = "3.0.0", note = "use `ItemAddOptions::add` instead")]
     // CFDictionary should not be exposed in public Rust APIs.
-    pub fn to_dictionary(&self) -> CFDictionary {
+    pub fn to_dictionary(&self) -> CFRetained<CFDictionary> {
         let mut dict = CFMutableDictionary::from_CFType_pairs(&[]);
 
         let class_opt = match &self.value {
@@ -740,7 +721,7 @@ impl ItemAddOptions {
     #[inline]
     pub fn add(&self) -> Result<()> {
         #[allow(deprecated)]
-        cvt(unsafe { SecItemAdd(self.to_dictionary().as_concrete_TypeRef(), std::ptr::null_mut()) })
+        cvt(unsafe { SecItemAdd(self.to_dictionary(), std::ptr::null_mut()) })
     }
 }
 
@@ -778,11 +759,11 @@ impl AddRef {
         }
     }
 
-    fn ref_(&self) -> CFTypeRef {
+    fn ref_(&self) -> &CFType {
         match self {
-            Self::Key(key) => key.as_CFTypeRef(),
-            Self::Identity(id) => id.as_CFTypeRef(),
-            Self::Certificate(cert) => cert.as_CFTypeRef(),
+            Self::Key(key) => key.as_CFType(),
+            Self::Identity(id) => id.as_CFType(),
+            Self::Certificate(cert) => cert.as_CFType(),
         }
     }
 }
@@ -796,17 +777,17 @@ pub struct ItemUpdateOptions {
     /// Optional value (by ref or data) of the item to update.
     pub value: Option<ItemUpdateValue>,
     /// Optional kSecAttrAccount attribute.
-    pub account_name: Option<CFString>,
+    pub account_name: Option<CFRetained<CFString>>,
     /// Optional kSecAttrAccessGroup attribute.
-    pub access_group: Option<CFString>,
+    pub access_group: Option<CFRetained<CFString>>,
     /// Optional kSecAttrComment attribute.
-    pub comment: Option<CFString>,
+    pub comment: Option<CFRetained<CFString>>,
     /// Optional kSecAttrDescription attribute.
-    pub description: Option<CFString>,
+    pub description: Option<CFRetained<CFString>>,
     /// Optional kSecAttrLabel attribute.
-    pub label: Option<CFString>,
+    pub label: Option<CFRetained<CFString>>,
     /// Optional kSecAttrService attribute.
-    pub service: Option<CFString>,
+    pub service: Option<CFRetained<CFString>>,
     /// Optional keychain location.
     pub location: Option<Location>,
     /// Optional kSecClass.
@@ -888,7 +869,7 @@ impl ItemUpdateOptions {
     /// Populates a `CFDictionary` to be passed to `update_item`.
     // CFDictionary should not be exposed in public Rust APIs.
     #[inline]
-    fn to_dictionary(&self) -> CFDictionary {
+    fn to_dictionary(&self) -> CFRetained<CFDictionary> {
         let mut dict = CFMutableDictionary::from_CFType_pairs(&[]);
 
         if let Some(ref value) = self.value {
@@ -1003,14 +984,14 @@ impl fmt::Debug for Location {
 #[deprecated(since = "3.0.0", note = "use `ItemAddOptions::add` instead")]
 #[allow(deprecated)]
 pub fn add_item(add_params: CFDictionary) -> Result<()> {
-    cvt(unsafe { SecItemAdd(add_params.as_concrete_TypeRef(), std::ptr::null_mut()) })
+    cvt(unsafe { SecItemAdd(add_params, std::ptr::null_mut()) })
 }
 
 /// Translates to `SecItemUpdate`.
 pub fn update_item(search_params: &ItemSearchOptions, update_params: &ItemUpdateOptions) -> Result<()> {
     cvt(unsafe { SecItemUpdate(
-        search_params.to_dictionary().as_concrete_TypeRef(),
-        update_params.to_dictionary().as_concrete_TypeRef()
+        search_params.to_dictionary(),
+        update_params.to_dictionary()
     )})
 }
 

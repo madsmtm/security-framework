@@ -1,14 +1,9 @@
 //! Querying trust settings.
 
-use core_foundation::array::{CFArray, CFArrayRef};
-use core_foundation::base::{CFIndex, TCFType};
-use core_foundation::dictionary::CFDictionary;
-use core_foundation::number::CFNumber;
-use core_foundation::string::CFString;
+use objc2_core_foundation::{CFArray, CFDictionary, CFIndex, CFNumber, CFRetained, CFString};
 
-use core_foundation_sys::base::CFTypeRef;
-use security_framework_sys::base::{errSecNoTrustSettings, errSecSuccess};
-use security_framework_sys::trust_settings::*;
+use objc2_security::{SecTrustSettingsCopyCertificates, SecTrustSettingsCopyTrustSettings, SecTrustSettingsResult};
+use objc2_security::{SecTrustSettingsDomain, errSecNoTrustSettings, errSecSuccess};
 
 use std::ptr;
 
@@ -22,20 +17,20 @@ use crate::cvt;
 #[repr(u32)]
 pub enum Domain {
     /// Per-user trust settings
-    User = kSecTrustSettingsDomainUser,
+    User = SecTrustSettingsDomain::User.0,
     /// Locally administered, system-wide trust settings
-    Admin = kSecTrustSettingsDomainAdmin,
+    Admin = SecTrustSettingsDomain::Admin.0,
     /// System trust settings
-    System = kSecTrustSettingsDomainSystem,
+    System = SecTrustSettingsDomain::System.0,
 }
 
 impl From<Domain> for SecTrustSettingsDomain {
     #[inline]
     fn from(domain: Domain) -> Self {
         match domain {
-            Domain::User => kSecTrustSettingsDomainUser,
-            Domain::Admin => kSecTrustSettingsDomainAdmin,
-            Domain::System => kSecTrustSettingsDomainSystem,
+            Domain::User => SecTrustSettingsDomain::User,
+            Domain::Admin => SecTrustSettingsDomain::Admin,
+            Domain::System => SecTrustSettingsDomain::System,
         }
     }
 }
@@ -66,11 +61,11 @@ impl TrustSettingsForCertificate {
         if value < 0 || value > i64::from(u32::max_value()) {
             return Self::Invalid;
         }
-        match value as u32 {
-            kSecTrustSettingsResultTrustRoot => Self::TrustRoot,
-            kSecTrustSettingsResultTrustAsRoot => Self::TrustAsRoot,
-            kSecTrustSettingsResultDeny => Self::Deny,
-            kSecTrustSettingsResultUnspecified => Self::Unspecified,
+        match SecTrustSettingsResult(value) {
+            SecTrustSettingsResult::TrustRoot => Self::TrustRoot,
+            SecTrustSettingsResult::TrustAsRoot => Self::TrustAsRoot,
+            SecTrustSettingsResult::Deny => Self::Deny,
+            SecTrustSettingsResult::Unspecified => Self::Unspecified,
             _ => Self::Invalid,
         }
     }
@@ -98,7 +93,7 @@ impl TrustSettings {
     /// This produces an empty iterator if there are no such certificates.
     pub fn iter(&self) -> Result<TrustSettingsIter> {
         let array = unsafe {
-            let mut array_ptr: CFArrayRef = ptr::null_mut();
+            let mut array_ptr: &CFArray = ptr::null_mut();
 
             // SecTrustSettingsCopyCertificates returns errSecNoTrustSettings
             // if no items have trust settings in the given domain.  We map
@@ -128,13 +123,14 @@ impl TrustSettings {
     /// environment, if you try it will return error `2070: errSecInternalComponent`
     #[cfg(target_os = "macos")]
     pub fn set_trust_settings_always(&self, cert: &SecCertificate) -> Result<()> {
+        use objc2_security::SecTrustSettingsSetTrustSettings;
+
         let domain = self.domain;
-        let trust_settings: CFTypeRef = ptr::null_mut();
         cvt(unsafe {
             SecTrustSettingsSetTrustSettings(
-                cert.as_CFTypeRef() as *mut _,
+                cert.as_CFType() as *mut _,
                 domain.into(),
-                trust_settings,
+                None,
             )
         })
     }
@@ -153,10 +149,10 @@ impl TrustSettings {
     /// Otherwise, the specific trust settings are aggregated and returned.
     pub fn tls_trust_settings_for_certificate(&self, cert: &SecCertificate) -> Result<Option<TrustSettingsForCertificate>> {
         let trust_settings = unsafe {
-            let mut array_ptr: CFArrayRef = ptr::null_mut();
-            let cert_ptr = cert.as_CFTypeRef() as *mut _;
+            let mut array_ptr: &CFArray = ptr::null_mut();
+            let cert_ptr = cert.as_CFType() as *mut _;
             cvt(SecTrustSettingsCopyTrustSettings(cert_ptr, self.domain.into(), &mut array_ptr))?;
-            CFArray::<CFDictionary>::wrap_under_create_rule(array_ptr)
+            CFArray::<CFDictionary<CFString, CFType>>::wrap_under_create_rule(array_ptr)
         };
 
         for settings in trust_settings.iter() {
@@ -165,9 +161,7 @@ impl TrustSettings {
                 let policy_name_key = CFString::from_static_string("kSecTrustSettingsPolicyName");
                 let ssl_policy_name = CFString::from_static_string("sslServer");
 
-                let maybe_name: Option<CFString> = settings
-                    .find(policy_name_key.as_CFTypeRef().cast())
-                    .map(|name| unsafe { CFString::wrap_under_get_rule((*name).cast()) });
+                let maybe_name = settings.get(&policy_name_key).map(|name| name.downcast::<CFString>().unwrap());
 
                 matches!(maybe_name, Some(ref name) if name != &ssl_policy_name)
             };
@@ -180,15 +174,14 @@ impl TrustSettings {
             let maybe_trust_result = {
                 let settings_result_key = CFString::from_static_string("kSecTrustSettingsResult");
                 settings
-                    .find(settings_result_key.as_CFTypeRef().cast())
-                    .map(|num| unsafe { CFNumber::wrap_under_get_rule((*num).cast()) })
-                    .and_then(|num| num.to_i64())
+                    .get(&settings_result_key)
+                    .map(|num| num.downcast::<CFNumber>().unwrap().to_i64())
             };
 
             // "Note that an empty Trust Settings array means "always trust this cert,
             //  with a resulting kSecTrustSettingsResult of kSecTrustSettingsResultTrustRoot"."
             let trust_result = TrustSettingsForCertificate::new(maybe_trust_result
-                .unwrap_or_else(|| i64::from(kSecTrustSettingsResultTrustRoot)));
+                .unwrap_or_else(|| i64::from(SecTrustSettingsResult::TrustRoot)));
 
             match trust_result {
                 TrustSettingsForCertificate::Unspecified |
@@ -206,7 +199,7 @@ impl TrustSettings {
 
 /// Iterator over certificates.
 pub struct TrustSettingsIter {
-    array: CFArray<SecCertificate>,
+    array: CFRetained<CFArray<objc2_security::SecCertificate>>,
     index: CFIndex,
 }
 
@@ -220,7 +213,7 @@ impl Iterator for TrustSettingsIter {
         } else {
             let cert = self.array.get(self.index).unwrap();
             self.index += 1;
-            Some(cert.clone())
+            Some(SecCertificate(cert))
         }
     }
 

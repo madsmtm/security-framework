@@ -1,12 +1,10 @@
 //! OIDs associated with certificate properties.
-use core_foundation::base::TCFType;
-use core_foundation::string::CFString;
-use core_foundation_sys::string::CFStringRef;
-use security_framework_sys::certificate_oids::kSecOIDX509V1SignatureAlgorithm;
+use objc2_core_foundation::{CFRetained, CFString, Type};
+use objc2_security::kSecOIDX509V1SignatureAlgorithm;
 
 /// An identifier of a property of a certificate.
 #[derive(Copy, Clone)]
-pub struct CertificateOid(CFStringRef);
+pub struct CertificateOid(pub(crate) &'static CFString);
 
 #[allow(missing_docs)]
 impl CertificateOid {
@@ -19,8 +17,8 @@ impl CertificateOid {
     /// Returns the underlying raw pointer corresponding to this OID.
     #[inline(always)]
     #[must_use]
-    // FIXME: Don't expose CFStringRef in Rust APIs
-    pub fn as_ptr(&self) -> CFStringRef {
+    // FIXME: Don't expose &CFString in Rust APIs
+    pub fn as_ptr(&self) -> *const CFString {
         self.0
     }
 
@@ -28,7 +26,7 @@ impl CertificateOid {
     #[inline]
     #[must_use]
     // FIXME: Don't expose CFString in Rust APIs
-    pub fn to_str(&self) -> CFString {
-        unsafe { CFString::wrap_under_get_rule(self.0) }
+    pub fn to_str(&self) -> CFRetained<CFString> {
+        self.0.retain()
     }
 }

@@ -7,30 +7,23 @@
 /// * Provide constants for well known item names
 use crate::base::{Error, Result};
 #[cfg(all(target_os = "macos", feature = "job-bless"))]
-use core_foundation::base::Boolean;
-use core_foundation::base::{CFTypeRef, TCFType};
-use core_foundation::bundle::CFBundleRef;
-use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+use crate::base::Boolean;
+use objc2_core_foundation::{CFType, CFString, CFBundle, CFDictionary, CFRetained};
 #[cfg(all(target_os = "macos", feature = "job-bless"))]
-use core_foundation::error::CFError;
-#[cfg(all(target_os = "macos", feature = "job-bless"))]
-use core_foundation::error::CFErrorRef;
-use core_foundation::string::{CFString, CFStringRef};
-use security_framework_sys::authorization as sys;
-use security_framework_sys::base::errSecConversionError;
+use objc2_core_foundation::CFError;
+use objc2_security::{AuthorizationExternalForm, AuthorizationFlags, errSecConversionError, self as sys};
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::os::raw::c_void;
-use std::ptr::addr_of;
-use sys::AuthorizationExternalForm;
+use std::ptr::{addr_of, NonNull};
 
 macro_rules! optional_str_to_cfref {
     ($string:ident) => {{
         $string
             .map(CFString::new)
-            .map_or(std::ptr::null(), |cfs| cfs.as_concrete_TypeRef())
+            .map_or(std::ptr::null(), |cfs| cfs.as_concrete_Type())
     }};
 }
 
@@ -43,28 +36,28 @@ macro_rules! cstring_or_err {
 bitflags::bitflags! {
     /// The flags used to specify authorization options.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Flags: sys::AuthorizationFlags {
+    pub struct Flags: u32 {
         /// An empty flag set that you use as a placeholder when you don't want
         /// any of the other flags.
-        const DEFAULTS = sys::kAuthorizationFlagDefaults;
+        const DEFAULTS = AuthorizationFlags::Defaults.0;
 
         /// A flag that permits user interaction as needed.
-        const INTERACTION_ALLOWED = sys::kAuthorizationFlagInteractionAllowed;
+        const INTERACTION_ALLOWED = AuthorizationFlags::InteractionAllowed.0;
 
         /// A flag that permits the Security Server to attempt to grant the
         /// rights requested.
-        const EXTEND_RIGHTS = sys::kAuthorizationFlagExtendRights;
+        const EXTEND_RIGHTS = AuthorizationFlags::ExtendRights.0;
 
         /// A flag that permits the Security Server to grant rights on an
         /// individual basis.
-        const PARTIAL_RIGHTS = sys::kAuthorizationFlagPartialRights;
+        const PARTIAL_RIGHTS = AuthorizationFlags::PartialRights.0;
 
         /// A flag that instructs the Security Server to revoke authorization.
-        const DESTROY_RIGHTS = sys::kAuthorizationFlagDestroyRights;
+        const DESTROY_RIGHTS = AuthorizationFlags::DestroyRights.0;
 
         /// A flag that instructs the Security Server to preauthorize the rights
         /// requested.
-        const PREAUTHORIZE = sys::kAuthorizationFlagPreAuthorize;
+        const PREAUTHORIZE = AuthorizationFlags::PreAuthorize.0;
     }
 }
 
@@ -248,7 +241,7 @@ impl AuthorizationItemSetBuilder {
 #[derive(Copy, Clone)]
 pub enum RightDefinition<'a> {
     /// The dictionary will contain the keys and values that define the rules.
-    FromDictionary(&'a CFDictionary<CFStringRef, CFTypeRef>),
+    FromDictionary(&'a CFDictionary<CFString, CFType>),
 
     /// The specified right's rules will be duplicated.
     FromExistingRight(&'a str),
@@ -271,7 +264,7 @@ impl TryFrom<AuthorizationExternalForm> for Authorization {
         let mut handle = MaybeUninit::<sys::AuthorizationRef>::uninit();
 
         let status = unsafe {
-            sys::AuthorizationCreateFromExternalForm(&external_form, handle.as_mut_ptr())
+            sys::AuthorizationCreateFromExternalForm(NonNull::from(&external_form), NonNull::new(handle.as_mut_ptr()).unwrap())
         };
 
         if status != sys::errAuthorizationSuccess {
@@ -359,9 +352,9 @@ impl Authorization {
     /// If `name` isn't convertable to a `CString` it will return
     /// Err(errSecConversionError).
     // TODO: deprecate and remove. CFDictionary should not be exposed in public Rust APIs.
-    pub fn get_right<T: Into<Vec<u8>>>(name: T) -> Result<CFDictionary<CFString, CFTypeRef>> {
+    pub fn get_right<T: Into<Vec<u8>>>(name: T) -> Result<CFRetained<CFDictionary<CFString, CFType>>> {
         let name = cstring_or_err!(name)?;
-        let mut dict = MaybeUninit::<CFDictionaryRef>::uninit();
+        let mut dict = MaybeUninit::<&CFDictionary>::uninit();
 
         let status = unsafe { sys::AuthorizationRightGet(name.as_ptr(), dict.as_mut_ptr()) };
 
@@ -411,8 +404,8 @@ impl Authorization {
     ///
     /// `name` cannot be a wildcard right.
     ///
-    /// `definition` can be either a `CFDictionaryRef` containing keys defining
-    /// the rules or a `CFStringRef` representing the name of another right
+    /// `definition` can be either a `&CFDictionary` containing keys defining
+    /// the rules or a `&CFString` representing the name of another right
     /// whose rules you wish to duplicaate.
     ///
     /// `description` is a key which can be used to look up localized
@@ -429,17 +422,17 @@ impl Authorization {
         name: T,
         definition: RightDefinition<'_>,
         description: Option<&str>,
-        bundle: Option<CFBundleRef>,
+        bundle: Option<&CFBundle>,
         locale: Option<&str>,
     ) -> Result<()> {
         let name = cstring_or_err!(name)?;
 
         let definition_cfstring: CFString;
         let definition_ref = match definition {
-            RightDefinition::FromDictionary(def) => def.as_CFTypeRef(),
+            RightDefinition::FromDictionary(def) => &**def,
             RightDefinition::FromExistingRight(def) => {
                 definition_cfstring = CFString::new(def);
-                definition_cfstring.as_CFTypeRef()
+                &**definition_cfstring
             },
         };
 
@@ -449,7 +442,7 @@ impl Authorization {
                 name.as_ptr(),
                 definition_ref,
                 optional_str_to_cfref!(description),
-                bundle.unwrap_or(std::ptr::null_mut()),
+                bundle,
                 optional_str_to_cfref!(locale),
             )
         };
@@ -483,7 +476,7 @@ impl Authorization {
 
         let mut inner = MaybeUninit::<*mut sys::AuthorizationItemSet>::uninit();
 
-        let status = unsafe { sys::AuthorizationCopyInfo(self.handle, tag_ptr, inner.as_mut_ptr()) };
+        let status = unsafe { sys::AuthorizationCopyInfo(self.handle, tag_ptr, NonNull::new(inner.as_mut_ptr()).unwrap()) };
 
         if status != sys::errAuthorizationSuccess {
             return Err(Error::from(status));
@@ -502,7 +495,7 @@ impl Authorization {
     pub fn make_external_form(&self) -> Result<sys::AuthorizationExternalForm> {
         let mut external_form = MaybeUninit::<sys::AuthorizationExternalForm>::uninit();
 
-        let status = unsafe { sys::AuthorizationMakeExternalForm(self.handle, external_form.as_mut_ptr()) };
+        let status = unsafe { sys::AuthorizationMakeExternalForm(self.handle, NonNull::new(external_form.as_mut_ptr()).unwrap()) };
 
         if status != sys::errAuthorizationSuccess {
             return Err(Error::from(status));
@@ -560,16 +553,16 @@ impl Authorization {
 
     /// Submits the executable for the given label as a `launchd` job.
     #[cfg(all(target_os = "macos", feature = "job-bless"))]
-    pub fn job_bless(&self, label: &str) -> Result<(), CFError> {
+    pub fn job_bless(&self, label: &str) -> Result<(), CFRetained<CFError>> {
         #[link(name = "ServiceManagement", kind = "framework")]
         extern "C" {
-            static kSMDomainSystemLaunchd: CFStringRef;
+            static kSMDomainSystemLaunchd: &CFString;
 
             fn SMJobBless(
-                domain: CFStringRef,
-                executableLabel: CFStringRef,
+                domain: &CFString,
+                executableLabel: &CFString,
                 auth: sys::AuthorizationRef,
-                error: *mut CFErrorRef,
+                error: *mut *mut CFError,
             ) -> Boolean;
         }
 
@@ -577,12 +570,12 @@ impl Authorization {
             let mut error = std::ptr::null_mut();
             SMJobBless(
                 kSMDomainSystemLaunchd,
-                CFString::new(label).as_concrete_TypeRef(),
+                &CFString::new(label).as_concrete_Type(),
                 self.handle,
                 &mut error,
             );
-            if !error.is_null() {
-                return Err(CFError::wrap_under_create_rule(error));
+            if let Some(error) = NonNull::new(error) {
+                return Err(CFRetained::from_raw(error));
             }
 
             Ok(())
@@ -607,6 +600,7 @@ impl Authorization {
 
         let mut pipe: *mut libc::FILE = std::ptr::null_mut();
 
+        #[allow(deprecated)]
         let status = unsafe {
             sys::AuthorizationExecuteWithPrivileges(
                 self.handle,

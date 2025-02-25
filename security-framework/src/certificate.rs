@@ -1,16 +1,11 @@
 //! Certificate support.
-use core_foundation::{declare_TCFType, impl_TCFType};
-use core_foundation::array::{CFArray, CFArrayRef};
-use core_foundation::base::{TCFType, ToVoid};
-use core_foundation::data::CFData;
-use core_foundation::dictionary::CFMutableDictionary;
-use core_foundation::string::CFString;
-use core_foundation_sys::base::kCFAllocatorDefault;
+
+use objc2_core_foundation::{kCFAllocatorDefault, CFArray, CFData, CFMutableDictionary, CFString};
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
-use security_framework_sys::base::{errSecNotTrusted, errSecSuccess};
-use security_framework_sys::base::{errSecParam, SecCertificateRef};
-use security_framework_sys::certificate::*;
-use security_framework_sys::keychain_item::SecItemDelete;
+use objc2_security::{errSecNotTrusted, errSecSuccess};
+use objc2_security::{errSecParam};
+use objc2_security::*;
+use objc2_security::SecItemDelete;
 use std::fmt;
 use std::ptr;
 
@@ -21,18 +16,15 @@ use crate::key;
 #[cfg(target_os = "macos")]
 use crate::os::macos::keychain::SecKeychain;
 #[cfg(any(feature = "OSX_10_12", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
-use core_foundation::base::FromVoid;
+use objc2_core_foundation::CFNumber;
 #[cfg(any(feature = "OSX_10_13", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
-use core_foundation::error::{CFError, CFErrorRef};
-#[cfg(any(feature = "OSX_10_12", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
-use core_foundation::number::CFNumber;
-use security_framework_sys::item::kSecValueRef;
+use objc2_core_foundation::CFError;
+use objc2_security::kSecValueRef;
 
 declare_TCFType! {
     /// A type representing a certificate.
-    SecCertificate, SecCertificateRef
+    SecCertificate, SecCertificate
 }
-impl_TCFType!(SecCertificate, SecCertificateRef, SecCertificateGetTypeID);
 
 unsafe impl Sync for SecCertificate {}
 unsafe impl Send for SecCertificate {}
@@ -51,7 +43,7 @@ impl SecCertificate {
     pub fn from_der(der_data: &[u8]) -> Result<Self> {
         let der_data = CFData::from_buffer(der_data);
         unsafe {
-            let certificate = SecCertificateCreateWithData(kCFAllocatorDefault, der_data.as_concrete_TypeRef());
+            let certificate = SecCertificateCreateWithData(kCFAllocatorDefault, der_data.as_concrete_Type());
             if certificate.is_null() {
                 Err(Error::from_code(errSecParam))
             } else {
@@ -64,7 +56,7 @@ impl SecCertificate {
     #[must_use]
     pub fn to_der(&self) -> Vec<u8> {
         unsafe {
-            let der_data = SecCertificateCopyData(self.0);
+            let der_data = SecCertificateCopyData(&self.0);
             CFData::wrap_under_create_rule(der_data).to_vec()
         }
     }
@@ -77,7 +69,7 @@ impl SecCertificate {
             _ => SecKeychain::default()?,
         };
         cvt(unsafe {
-            SecCertificateAddToKeychain(self.as_CFTypeRef() as *mut _, kch.as_CFTypeRef() as *mut _)
+            SecCertificateAddToKeychain(self.as_CFTypeRef() as *mut _, kch.as_CFType() as *mut _)
         })
     }
 
@@ -85,17 +77,17 @@ impl SecCertificate {
     #[must_use]
     pub fn subject_summary(&self) -> String {
         unsafe {
-            let summary = SecCertificateCopySubjectSummary(self.0);
+            let summary = SecCertificateCopySubjectSummary(&self.0);
             CFString::wrap_under_create_rule(summary).to_string()
         }
     }
 
     /// Returns a vector of email addresses for the subject of the certificate.
     pub fn email_addresses(&self) -> Result<Vec<String>, Error> {
-        let mut array: CFArrayRef = ptr::null();
+        let mut array: &CFArray = ptr::null();
         unsafe {
             cvt(SecCertificateCopyEmailAddresses(
-                self.as_concrete_TypeRef(),
+                self,
                 &mut array,
             ))?;
 
@@ -109,7 +101,7 @@ impl SecCertificate {
     #[must_use]
     pub fn issuer(&self) -> Vec<u8> {
         unsafe {
-            let issuer = SecCertificateCopyNormalizedIssuerSequence(self.0);
+            let issuer = SecCertificateCopyNormalizedIssuerSequence(&self.0);
             CFData::wrap_under_create_rule(issuer).to_vec()
         }
     }
@@ -119,21 +111,21 @@ impl SecCertificate {
     #[must_use]
     pub fn subject(&self) -> Vec<u8> {
         unsafe {
-            let subject = SecCertificateCopyNormalizedSubjectSequence(self.0);
+            let subject = SecCertificateCopyNormalizedSubjectSequence(&self.0);
             CFData::wrap_under_create_rule(subject).to_vec()
         }
     }
 
     #[cfg(any(feature = "OSX_10_13", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
     /// Returns DER encoded serial number of the certificate.
-    pub fn serial_number_bytes(&self) -> Result<Vec<u8>, CFError> {
+    pub fn serial_number_bytes(&self) -> Result<Vec<u8>, CFRetained<CFError>> {
         unsafe {
-            let mut error: CFErrorRef = ptr::null_mut();
+            let mut error: &CFError = ptr::null_mut();
             let serial_number = SecCertificateCopySerialNumberData(self.0, &mut error);
             if error.is_null() {
                 Ok(CFData::wrap_under_create_rule(serial_number).to_vec())
             } else {
-                Err(CFError::wrap_under_create_rule(error))
+                Err(CFRetained::from_raw(NonNull::new(error).unwrap()))
             }
         }
     }
@@ -151,14 +143,14 @@ impl SecCertificate {
     #[cfg(any(feature = "OSX_10_12", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
     #[must_use]
     fn pk_to_der(&self, public_key: key::SecKey) -> Option<Vec<u8>> {
-        use security_framework_sys::item::{kSecAttrKeySizeInBits, kSecAttrKeyType};
+        use objc2_security::{kSecAttrKeySizeInBits, kSecAttrKeyType};
 
         let public_key_attributes = public_key.attributes();
         let public_key_type = public_key_attributes
             .find(unsafe { kSecAttrKeyType }.cast::<std::os::raw::c_void>())?;
         let public_keysize = public_key_attributes
             .find(unsafe { kSecAttrKeySizeInBits }.cast::<std::os::raw::c_void>())?;
-        let public_keysize = unsafe { CFNumber::from_void(*public_keysize) };
+        let public_keysize = unsafe { CFNumber::new_isize(public_keysize as isize) };
         let public_keysize_val = public_keysize.to_i64()? as u32;
         let hdr_bytes = get_asn1_header_bytes(
             unsafe { CFString::wrap_under_get_rule(*public_key_type as _) },
@@ -198,13 +190,13 @@ impl SecCertificate {
             self.to_void(),
         )]);
 
-        cvt(unsafe { SecItemDelete(query.as_concrete_TypeRef()) })
+        cvt(unsafe { SecItemDelete(query) })
     }
 }
 
 #[cfg(any(feature = "OSX_10_12", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))]
 fn get_asn1_header_bytes(pkt: CFString, ksz: u32) -> Option<&'static [u8]> {
-    use security_framework_sys::item::{kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeyTypeRSA};
+    use objc2_security::{kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeyTypeRSA};
 
     if pkt == unsafe { CFString::wrap_under_get_rule(kSecAttrKeyTypeRSA) } && ksz == 2048 {
         return Some(&RSA_2048_ASN1_HEADER);

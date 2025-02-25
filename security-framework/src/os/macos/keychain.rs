@@ -1,25 +1,27 @@
 //! Keychain support.
-use core_foundation::{declare_TCFType, impl_TCFType};
-use core_foundation::base::{Boolean, TCFType};
-use security_framework_sys::base::{errSecSuccess, SecKeychainRef};
-use security_framework_sys::keychain::*;
-use std::ffi::CString;
+#![allow(deprecated)]
+
+use objc2_core_foundation::CFRetained;
+use objc2_security::errSecSuccess;
+use objc2_security::*;
+use std::ffi::{c_uint, CString};
 use std::os::raw::c_void;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::ptr;
+use std::ptr::{self, NonNull};
 
 use crate::base::{Error, Result};
 use crate::cvt;
 use crate::os::macos::access::SecAccess;
 
-pub use security_framework_sys::keychain::SecPreferencesDomain;
+pub use objc2_security::SecPreferencesDomain;
+
+pub const SEC_KEYCHAIN_SETTINGS_VERS1: c_uint = 1;
 
 declare_TCFType! {
     /// A type representing a keychain.
-    SecKeychain, SecKeychainRef
+    SecKeychain, SecKeychain
 }
-impl_TCFType!(SecKeychain, SecKeychainRef, SecKeychainGetTypeID);
 
 unsafe impl Sync for SecKeychain {}
 unsafe impl Send for SecKeychain {}
@@ -32,8 +34,8 @@ impl SecKeychain {
     pub fn default() -> Result<Self> {
         unsafe {
             let mut keychain = ptr::null_mut();
-            cvt(SecKeychainCopyDefault(&mut keychain))?;
-            Ok(Self::wrap_under_create_rule(keychain))
+            cvt(SecKeychainCopyDefault(NonNull::from(&mut keychain)))?;
+            Ok(Self(CFRetained::from_raw(NonNull::new(keychain).unwrap())))
         }
     }
 
@@ -42,8 +44,8 @@ impl SecKeychain {
     pub fn default_for_domain(domain: SecPreferencesDomain) -> Result<Self> {
         unsafe {
             let mut keychain = ptr::null_mut();
-            cvt(SecKeychainCopyDomainDefault(domain, &mut keychain))?;
-            Ok(Self::wrap_under_create_rule(keychain))
+            cvt(SecKeychainCopyDomainDefault(domain, NonNull::from(&mut keychain)))?;
+            Ok(Self(CFRetained::from_raw(NonNull::new(keychain).unwrap())))
         }
     }
 
@@ -53,11 +55,12 @@ impl SecKeychain {
             path.as_ref().as_os_str().as_bytes(),
             std::slice::from_ref(&0)
         ].concat();
+        let path_name = NonNull::new(path_name.as_ptr().cast_mut().cast()).unwrap();
 
         unsafe {
             let mut keychain = ptr::null_mut();
-            cvt(SecKeychainOpen(path_name.as_ptr().cast(), &mut keychain))?;
-            Ok(Self::wrap_under_create_rule(keychain))
+            cvt(SecKeychainOpen(path_name, NonNull::from(&mut keychain)))?;
+            Ok(Self(CFRetained::from_raw(NonNull::new(keychain).unwrap())))
         }
     }
 
@@ -72,10 +75,10 @@ impl SecKeychain {
 
         unsafe {
             cvt(SecKeychainUnlock(
-                self.as_concrete_TypeRef(),
+                Some(self.as_raw()),
                 len as u32,
                 ptr,
-                Boolean::from(use_password),
+                use_password,
             ))
         }
     }
@@ -85,7 +88,7 @@ impl SecKeychain {
     pub fn set_settings(&mut self, settings: &KeychainSettings) -> Result<()> {
         unsafe {
             cvt(SecKeychainSetSettings(
-                self.as_concrete_TypeRef(),
+                Some(self.as_raw()),
                 &settings.0,
             ))
         }
@@ -108,8 +111,9 @@ impl SecKeychain {
     /// Indicates whether keychain services functions that normally display a
     /// user interaction are allowed to do so.
     pub fn user_interaction_allowed() -> Result<bool> {
+
         let mut state: Boolean = 0;
-        let code = unsafe { SecKeychainGetUserInteractionAllowed(&mut state) };
+        let code = unsafe { SecKeychainGetUserInteractionAllowed(NonNull::from(&mut state)) };
 
         if code != errSecSuccess {
             Err(Error::from_code(code))
@@ -169,22 +173,17 @@ impl CreateOptions {
                 None => (ptr::null(), 0),
             };
 
-            let access = match self.access {
-                Some(ref access) => access.as_concrete_TypeRef(),
-                None => ptr::null_mut(),
-            };
-
             let mut keychain = ptr::null_mut();
             cvt(SecKeychainCreate(
                 path_name.as_ptr(),
                 password_len,
                 password,
-                Boolean::from(self.prompt_user),
-                access,
-                &mut keychain,
+                self.prompt_user,
+                self.access.as_ref().map(|access| access.as_raw()),
+                NonNull::from(&mut keychain),
             ))?;
 
-            Ok(SecKeychain::wrap_under_create_rule(keychain))
+            Ok(Self(CFRetained::from_raw(NonNull::new(keychain).unwrap())))
         }
     }
 }

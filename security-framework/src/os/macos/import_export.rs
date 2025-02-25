@@ -1,11 +1,9 @@
 //! OSX specific extensions to import/export functionality.
 
-use core_foundation::array::CFArray;
-use core_foundation::base::{CFType, TCFType};
-use core_foundation::data::CFData;
-use core_foundation::string::CFString;
-use security_framework_sys::base::errSecSuccess;
-use security_framework_sys::import_export::*;
+use objc2_core_foundation::{CFArray, CFType, CFData, CFString};
+use objc2_security::errSecSuccess;
+use objc2_security::*;
+use std::ffi::c_uint;
 use std::ptr;
 use std::str::FromStr;
 
@@ -43,12 +41,12 @@ impl Pkcs12ImportOptionsExt for Pkcs12ImportOptions {
 /// A builder type to import Security Framework types from serialized formats.
 #[derive(Default)]
 pub struct ImportOptions<'a> {
-    filename: Option<CFString>,
-    passphrase: Option<CFType>,
+    filename: Option<CFRetained<CFString>>,
+    passphrase: Option<CFRetained<CFType>>,
     secure_passphrase: bool,
     no_access_control: bool,
-    alert_title: Option<CFString>,
-    alert_prompt: Option<CFString>,
+    alert_title: Option<CFRetained<CFString>>,
+    alert_prompt: Option<CFRetained<CFString>>,
     items: Option<&'a mut SecItems>,
     keychain: Option<SecKeychain>,
 }
@@ -66,21 +64,21 @@ impl<'a> ImportOptions<'a> {
     /// The extension of the file will used as a hint for parsing.
     #[inline]
     pub fn filename(&mut self, filename: &str) -> &mut Self {
-        self.filename = Some(CFString::from_str(filename).unwrap());
+        self.filename = Some(CFString::from_str(filename));
         self
     }
 
     /// Sets the passphrase to be used to decrypt the imported data.
     #[inline]
     pub fn passphrase(&mut self, passphrase: &str) -> &mut Self {
-        self.passphrase = Some(CFString::from_str(passphrase).unwrap().into_CFType());
+        self.passphrase = Some(CFString::from_str(passphrase).into());
         self
     }
 
     /// Sets the passphrase to be used to decrypt the imported data.
     #[inline]
     pub fn passphrase_bytes(&mut self, passphrase: &[u8]) -> &mut Self {
-        self.passphrase = Some(CFData::from_buffer(passphrase).into_CFType());
+        self.passphrase = Some(CFData::from_buffer(passphrase).into());
         self
     }
 
@@ -103,7 +101,7 @@ impl<'a> ImportOptions<'a> {
     /// option.
     #[inline]
     pub fn alert_title(&mut self, alert_title: &str) -> &mut Self {
-        self.alert_title = Some(CFString::from_str(alert_title).unwrap());
+        self.alert_title = Some(CFString::from_str(alert_title));
         self
     }
 
@@ -111,7 +109,7 @@ impl<'a> ImportOptions<'a> {
     /// option.
     #[inline]
     pub fn alert_prompt(&mut self, alert_prompt: &str) -> &mut Self {
-        self.alert_prompt = Some(CFString::from_str(alert_prompt).unwrap());
+        self.alert_prompt = Some(CFString::from_str(alert_prompt));
         self
     }
 
@@ -134,10 +132,10 @@ impl<'a> ImportOptions<'a> {
     /// Imports items from serialized data.
     pub fn import(&mut self, data: &[u8]) -> Result<()> {
         let data = CFData::from_buffer(data);
-        let data = data.as_concrete_TypeRef();
+        let data = data;
 
         let filename = match self.filename {
-            Some(ref filename) => filename.as_concrete_TypeRef(),
+            Some(ref filename) => filename,
             None => ptr::null(),
         };
 
@@ -153,27 +151,27 @@ impl<'a> ImportOptions<'a> {
         };
 
         if let Some(ref passphrase) = self.passphrase {
-            key_params.passphrase = passphrase.as_CFTypeRef();
+            key_params.passphrase = passphrase.as_CFType();
         }
 
         if self.secure_passphrase {
-            key_params.flags |= kSecKeySecurePassphrase;
+            key_params.flags |= SecKeyImportExportFlags::SecurePassphrase;
         }
 
         if self.no_access_control {
-            key_params.flags |= kSecKeyNoAccessControl;
+            key_params.flags |= SecKeyImportExportFlags::NoAccessControl;
         }
 
         if let Some(ref alert_title) = self.alert_title {
-            key_params.alertTitle = alert_title.as_concrete_TypeRef();
+            key_params.alertTitle = alert_title;
         }
 
         if let Some(ref alert_prompt) = self.alert_prompt {
-            key_params.alertPrompt = alert_prompt.as_concrete_TypeRef();
+            key_params.alertPrompt = alert_prompt;
         }
 
         let keychain = match self.keychain {
-            Some(ref keychain) => keychain.as_concrete_TypeRef(),
+            Some(ref keychain) => keychain,
             None => ptr::null_mut(),
         };
 
@@ -203,11 +201,11 @@ impl<'a> ImportOptions<'a> {
                 for item in raw_items.iter() {
                     let type_id = item.type_of();
                     if type_id == SecCertificate::type_id() {
-                        items.certificates.push(SecCertificate::wrap_under_get_rule(item.as_CFTypeRef() as *mut _));
+                        items.certificates.push(SecCertificate::wrap_under_get_rule(item.as_CFType() as *mut _));
                     } else if type_id == SecIdentity::type_id() {
-                        items.identities.push(SecIdentity::wrap_under_get_rule(item.as_CFTypeRef() as *mut _));
+                        items.identities.push(SecIdentity::wrap_under_get_rule(item.as_CFType() as *mut _));
                     } else if type_id == SecKey::type_id() {
-                        items.keys.push(SecKey::wrap_under_get_rule(item.as_CFTypeRef() as *mut _));
+                        items.keys.push(SecKey::wrap_under_get_rule(item.as_CFType() as *mut _));
                     } else {
                         panic!("Got bad type from SecItemImport: {type_id}");
                     }

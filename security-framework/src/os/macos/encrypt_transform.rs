@@ -1,21 +1,16 @@
 //! Encryption and Decryption transform support.
 
-use core_foundation::base::TCFType;
-use core_foundation::data::CFData;
-use core_foundation::error::CFError;
-use core_foundation::string::CFString;
-use core_foundation_sys::data::CFDataRef;
-use core_foundation_sys::string::CFStringRef;
-use security_framework_sys::encrypt_transform::*;
-use security_framework_sys::transform::kSecTransformInputAttributeName;
-use std::ptr;
+use objc2_core_foundation::{CFData, CFError, CFRetained, CFString, Type};
+use objc2_security::*;
+use objc2_security::kSecTransformInputAttributeName;
+use std::ptr::{self, NonNull};
 
 use crate::key::SecKey;
 use crate::os::macos::transform::SecTransform;
 
 #[derive(Debug, Copy, Clone)]
 /// The padding scheme to use for encryption.
-pub struct Padding(CFStringRef);
+pub struct Padding(&'static CFString);
 
 impl Padding {
     /// Do not pad.
@@ -54,8 +49,8 @@ impl Padding {
     }
 
     #[inline]
-    fn to_str(self) -> CFString {
-        unsafe { CFString::wrap_under_get_rule(self.0) }
+    fn to_str(self) -> CFRetained<CFString> {
+        self.0.retain()
     }
 }
 
@@ -63,7 +58,7 @@ impl Padding {
 ///
 /// Only applies to AES encryption.
 #[derive(Debug, Copy, Clone)]
-pub struct Mode(CFStringRef);
+pub struct Mode(&'static CFString);
 
 #[allow(missing_docs)]
 impl Mode {
@@ -97,8 +92,8 @@ impl Mode {
         unsafe { Self(kSecModeOFBKey) }
     }
 
-    fn to_str(self) -> CFString {
-        unsafe { CFString::wrap_under_get_rule(self.0) }
+    fn to_str(self) -> CFRetained<CFString> {
+        self.0.retain()
     }
 }
 
@@ -107,7 +102,7 @@ impl Mode {
 pub struct Builder {
     padding: Option<Padding>,
     mode: Option<Mode>,
-    iv: Option<CFData>,
+    iv: Option<CFRetained<CFData>>,
 }
 
 impl Builder {
@@ -140,21 +135,22 @@ impl Builder {
     ///
     /// If not set, an appropriate value will be supplied for you.
     #[inline(always)]
-    pub fn iv(&mut self, iv: CFData) -> &mut Self {
+    pub fn iv(&mut self, iv: CFRetained<CFData>) -> &mut Self {
         self.iv = Some(iv);
         self
     }
 
     /// Encrypts data with a provided key.
     // FIXME: deprecate and remove: don't expose CFData in Rust APIs.
-    pub fn encrypt(&self, key: &SecKey, data: &CFData) -> Result<CFData, CFError> {
+    pub fn encrypt(&self, key: &SecKey, data: &CFData) -> Result<CFRetained<CFData>, CFRetained<CFError>> {
+        #[allow(deprecated)]
         unsafe {
             let mut error = ptr::null_mut();
-            let transform = SecEncryptTransformCreate(key.as_concrete_TypeRef(), &mut error);
+            let transform = SecEncryptTransformCreate(key.as_raw(), &mut error);
             if transform.is_null() {
-                return Err(CFError::wrap_under_create_rule(error));
+                return Err(CFRetained::from_raw(NonNull::new(error).unwrap()));
             }
-            let transform = SecTransform::wrap_under_create_rule(transform);
+            let transform = SecTransform(transform);
 
             self.finish(transform, data)
         }
@@ -162,41 +158,38 @@ impl Builder {
 
     /// Decrypts data with a provided key.
     // FIXME: deprecate and remove: don't expose CFData in Rust APIs.
-    pub fn decrypt(&self, key: &SecKey, data: &CFData) -> Result<CFData, CFError> {
+    pub fn decrypt(&self, key: &SecKey, data: &CFData) -> Result<CFRetained<CFData>, CFRetained<CFError>> {
+        #[allow(deprecated)]
         unsafe {
             let mut error = ptr::null_mut();
-            let transform = SecDecryptTransformCreate(key.as_concrete_TypeRef(), &mut error);
+            let transform = SecDecryptTransformCreate(key.as_raw(), &mut error);
             if transform.is_null() {
-                return Err(CFError::wrap_under_create_rule(error));
+                return Err(CFRetained::from_raw(NonNull::new(error).unwrap()));
             }
-            let transform = SecTransform::wrap_under_create_rule(transform);
+            let transform = SecTransform(transform);
 
             self.finish(transform, data)
         }
     }
 
-    fn finish(&self, mut transform: SecTransform, data: &CFData) -> Result<CFData, CFError> {
+    fn finish(&self, mut transform: SecTransform, data: &CFData) -> Result<CFRetained<CFData>, CFRetained<CFError>> {
         unsafe {
             if let Some(ref padding) = self.padding {
-                let key = CFString::wrap_under_get_rule(kSecPaddingKey);
-                transform.set_attribute(&key, &padding.to_str())?;
+                transform.set_attribute(kSecPaddingKey, &padding.to_str())?;
             }
 
             if let Some(ref mode) = self.mode {
-                let key = CFString::wrap_under_get_rule(kSecEncryptionMode);
-                transform.set_attribute(&key, &mode.to_str())?;
+                transform.set_attribute(kSecEncryptionMode, &mode.to_str())?;
             }
 
             if let Some(ref iv) = self.iv {
-                let key = CFString::wrap_under_get_rule(kSecIVKey);
-                transform.set_attribute(&key, iv)?;
+                transform.set_attribute(kSecIVKey, iv)?;
             }
 
-            let key = CFString::wrap_under_get_rule(kSecTransformInputAttributeName);
-            transform.set_attribute(&key, data)?;
+            transform.set_attribute(kSecTransformInputAttributeName, data)?;
 
             let result = transform.execute()?;
-            Ok(CFData::wrap_under_get_rule(result.as_CFTypeRef() as CFDataRef))
+            Ok(result.downcast().unwrap())
         }
     }
 }
@@ -241,7 +234,7 @@ mod test {
             .decrypt(&key, &CFData::from_buffer(&ciphertext))
             .unwrap();
 
-        assert_eq!(plaintext, decrypted.bytes());
+        assert_eq!(plaintext, decrypted.to_vec());
 
         let encrypted = Builder::new()
             .padding(Padding::none())
@@ -249,6 +242,6 @@ mod test {
             .encrypt(&key, &CFData::from_buffer(&plaintext))
             .unwrap();
 
-        assert_eq!(ciphertext, encrypted.bytes());
+        assert_eq!(ciphertext, encrypted.to_vec());
     }
 }

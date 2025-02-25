@@ -1,11 +1,13 @@
 //! Support types for other modules.
 
-use core_foundation::string::CFString;
-use core_foundation_sys::base::OSStatus;
+use objc2_core_foundation::CFString;
 use std::error;
 use std::fmt;
 use std::num::NonZeroI32;
 use std::result;
+
+pub(crate) type OSStatus = i32;
+pub(crate) type Boolean = u8;
 
 /// A `Result` type commonly returned by functions.
 pub type Result<T, E = Error> = result::Result<T, E>;
@@ -44,8 +46,7 @@ impl Error {
 
     #[cold]
     fn inner_message(self) -> Option<String> {
-        use core_foundation::base::TCFType;
-        use security_framework_sys::base::SecCopyErrorMessageString;
+        use objc2_security::SecCopyErrorMessageString;
         use std::ptr;
 
         unsafe {
